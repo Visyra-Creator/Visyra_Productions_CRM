@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+
+# Node / React Native
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Expo
+.expo/
+.expo-shared/
+
+# Metro bundler
+.metro-cache/
+
+# build outputs
+dist/
+build/
+web-build/
+
+# environment variables
+.env
+.env.local
+.env.*.local
+
+# logs
+logs
+*.log
+
+# coverage
+coverage/
+
+# IDE
+.idea/
+.vscode/
+
+# Android
+android/.gradle
+android/app/build
+android/build
+
+# iOS
+ios/build
+ios/Pods
+
+# TypeScript
+*.tsbuildinfo
+
+# test cache
+jest-cache/
