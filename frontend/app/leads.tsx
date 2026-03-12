@@ -129,6 +129,24 @@ export default function Leads() {
   const [tempYear, setTempYear] = useState(new Date().getFullYear());
   const [tempWeek, setTempWeek] = useState(1);
 
+  // auto-generate next lead_id based on existing leads
+  // new format: L followed by four digits (e.g. L0001)
+  const getNextLeadId = () => {
+    let max = 0;
+    leads.forEach(l => {
+      if (l.lead_id) {
+        // strip non-digits, then parse
+        const digits = l.lead_id.replace(/\D/g, '');
+        const n = parseInt(digits, 10);
+        if (!isNaN(n) && n > max) max = n;
+      }
+    });
+    const next = max + 1;
+    // if number exceeds 9999, allow longer sequence without padding
+    if (next > 9999) return 'L' + next.toString();
+    return 'L' + next.toString().padStart(4, '0');
+  };
+
   // keep track of the month/year that were used when a "week" filter was applied
   // (summaryDates.week may point to a date in the previous month if the first
   // week of the month starts in the prior month). Storing the month/year lets
@@ -191,6 +209,7 @@ export default function Leads() {
       let todayCount = 0;
       let weekCount = 0;
       let monthCount = 0;
+      const today = new Date();
 
       allLeads.forEach(lead => {
         const createdAtStr = lead.created_at;
@@ -199,9 +218,9 @@ export default function Leads() {
         if (createdAtStr) {
           try {
             const createdAt = parseISO(createdAtStr.replace(' ', 'T') + 'Z'); 
-            if (isSameDay(createdAt, summaryDates.today)) todayCount++;
-            if (isSameWeek(createdAt, summaryDates.week, { weekStartsOn: 1 })) weekCount++;
-            if (isSameMonth(createdAt, summaryDates.month)) monthCount++;
+            if (isSameDay(createdAt, today)) todayCount++;
+            if (isSameWeek(createdAt, today, { weekStartsOn: 1 })) weekCount++;
+            if (isSameMonth(createdAt, today)) monthCount++;
           } catch (e) {}
         }
       });
@@ -217,7 +236,7 @@ export default function Leads() {
     } finally {
       setLoading(false);
     }
-  }, [summaryDates]);
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -312,6 +331,30 @@ export default function Leads() {
     return result;
   }, [leads, searchQuery, filters, sortBy, activeSummaryType, summaryDates]);
 
+  const displayStats = useMemo(() => {
+    let todayCount = 0;
+    let weekCount = 0;
+    let monthCount = 0;
+    const today = new Date();
+
+    processedLeads.forEach(lead => {
+      if (lead.created_at) {
+        try {
+          const createdAt = parseISO(lead.created_at.replace(' ', 'T') + 'Z');
+          if (isSameDay(createdAt, today)) todayCount++;
+          if (isSameWeek(createdAt, today, { weekStartsOn: 1 })) weekCount++;
+          if (isSameMonth(createdAt, today)) monthCount++;
+        } catch (e) {}
+      }
+    });
+
+    return {
+      today: todayCount,
+      week: weekCount,
+      month: monthCount
+    };
+  }, [processedLeads]);
+
   const toggleSelection = (id: number) => {
     const newSelected = new Set(selectedIds);
     if (newSelected.has(id)) newSelected.delete(id);
@@ -331,11 +374,20 @@ export default function Leads() {
             const selectedLeads = leads.filter(l => selectedIds.has(l.id));
             
             for (const lead of selectedLeads) {
-              // Add to clients table
+              // Add to clients table, preserving most lead fields so we can later restore exactly
               await db.runAsync(
-                `INSERT INTO clients (name, phone, email, lead_source, event_type, notes, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`,
-                [lead.name, lead.phone, lead.email, lead.source, lead.event_type, lead.notes]
+                `INSERT INTO clients (name, phone, email, event_type, event_date, event_location, lead_source, notes, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+                [
+                  lead.name,
+                  lead.phone,
+                  lead.email,
+                  lead.event_type || null,
+                  lead.event_date || null,
+                  lead.company_name || null, // store company in location
+                  lead.source,
+                  lead.notes || null
+                ]
               );
               // Keep a copy in leads table (do not delete)
             }
@@ -346,6 +398,53 @@ export default function Leads() {
           } catch (error) {
             console.error('Failed to convert leads:', error);
             Alert.alert('Error', 'Failed to convert leads to clients');
+          }
+        }}
+    ]);
+  };
+
+  const handleConvertSingleLead = async (lead: Lead) => {
+    Alert.alert('Convert Lead', `Convert "${lead.name}" to client?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Convert', onPress: async () => {
+          try {
+            const db = getDatabase();
+            if (!db) return;
+
+            await db.runAsync(
+              `INSERT INTO clients (name, phone, email, event_type, event_date, event_location, lead_source, notes, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+              [
+                lead.name,
+                lead.phone,
+                lead.email,
+                lead.event_type || null,
+                lead.event_date || null,
+                lead.company_name || null,
+                lead.source,
+                lead.notes || null
+              ]
+            );
+
+            // Fetch the newly created client to open edit form
+            const result = await db.getAllAsync(
+              'SELECT * FROM clients ORDER BY id DESC LIMIT 1'
+            ) as any[];
+            
+            if (result && result.length > 0) {
+              const newClient = result[0];
+              Alert.alert('Success', 'Lead converted to client successfully', [
+                { text: 'OK', onPress: () => {
+                  // Navigate to clients page with parameter to auto-edit the new client
+                  router.push({ pathname: 'clients', params: { autoEditClientId: newClient.id.toString() } });
+                }}
+              ]);
+            }
+            
+            loadData();
+          } catch (error) {
+            console.error('Failed to convert lead:', error);
+            Alert.alert('Error', 'Failed to convert lead to client');
           }
         }}
     ]);
@@ -378,6 +477,23 @@ export default function Leads() {
     setFormData({ ...formData, email: cleaned });
   };
 
+  const handleLeadIdChange = (text: string) => {
+    // enforce pattern: starts with 'L' followed by digits
+    let t = text.toUpperCase();
+    if (!t.startsWith('L')) {
+      // strip non-digits then prefix L
+      const digits = t.replace(/\D/g, '');
+      t = 'L' + digits;
+    } else {
+      // keep L and strip non-digits from remainder
+      const rest = t.slice(1).replace(/\D/g, '');
+      t = 'L' + rest;
+    }
+    // limit to L + 4 digits
+    if (t.length > 5) t = t.slice(0, 5);
+    setFormData({ ...formData, lead_id: t });
+  };
+
   const validateGmail = (email: string) => {
     const trimmed = email.trim().toLowerCase();
     if (!trimmed) return { valid: true, email: '' };
@@ -392,6 +508,7 @@ export default function Leads() {
 
   const handleResetForm = () => {
     setFormData({
+      lead_id: '',
       name: '',
       company_name: '',
       phone: '',
@@ -443,13 +560,13 @@ export default function Leads() {
   
       if (editingLeadId) {
         await db.runAsync(
-          'UPDATE leads SET name=?, company_name=?, phone=?, email=?, source=?, stage=?, event_date=?, next_follow_up=?, notes=? WHERE id=?',
-          [finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes, editingLeadId]
+          'UPDATE leads SET lead_id=?, name=?, company_name=?, phone=?, email=?, source=?, stage=?, event_date=?, next_follow_up=?, notes=? WHERE id=?',
+          [formData.lead_id || null, finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes, editingLeadId]
         );
       } else {
         await db.runAsync(
-          'INSERT INTO leads (name, company_name, phone, email, source, stage, event_date, next_follow_up, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes]
+          'INSERT INTO leads (lead_id, name, company_name, phone, email, source, stage, event_date, next_follow_up, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [formData.lead_id || null, finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes]
         );
       }
       setModalVisible(false);
@@ -465,6 +582,7 @@ export default function Leads() {
   const handleEdit = (lead: Lead) => {
     const editablePhone = lead.phone.startsWith('+91') ? lead.phone.slice(3) : lead.phone;
     setFormData({
+      lead_id: lead.lead_id || '',
       name: lead.name,
       company_name: lead.company_name || '',
       phone: editablePhone,
@@ -521,13 +639,22 @@ export default function Leads() {
   };
 
   const resetSummarySelection = () => {
+    const now = new Date();
     setActiveSummaryType(null);
     setSummaryDates({
-      today: new Date(),
-      week: new Date(),
-      month: new Date()
+      today: now,
+      week: now,
+      month: now
     });
-    setSelectedWeekMonthYear({ month: new Date().getMonth(), year: new Date().getFullYear() });
+    setSelectedWeekMonthYear({ month: now.getMonth(), year: now.getFullYear() });
+    setTempMonth(now.getMonth());
+    setTempYear(now.getFullYear());
+    setTempWeek(1);
+    // Re-trigger loadData to recalculate stats with today's date
+    setTimeout(() => {
+      loadData();
+      setActiveSummaryType('today');
+    }, 50);
   };
 
   const clearFilters = () => {
@@ -630,8 +757,9 @@ export default function Leads() {
 
   const getSummaryTitle = (type: 'today' | 'week' | 'month', defaultTitle: string) => {
     const date = summaryDates[type];
+    const today = new Date();
     if (type === 'today') {
-      return isToday(date) ? 'Total Leads (Today)' : `Leads (${format(date, 'MMM dd')})`;
+      return isSameDay(date, today) ? 'Total Leads (Today)' : `Leads (${format(date, 'MMM dd')})`;
     } else if (type === 'week') {
       // For week filters we want the display range to respect the month/year the
       // user chose, even if the actual weekStart falls in the previous month.
@@ -642,16 +770,32 @@ export default function Leads() {
         start = new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1);
       }
       const end = endOfWeek(start, { weekStartsOn: 1 });
-      const isCurrentWeek = isSameWeek(start, new Date(), { weekStartsOn: 1 });
+      const isCurrentWeek = isSameWeek(start, today, { weekStartsOn: 1 });
       return isCurrentWeek ? 'Total Leads (Week)' : `${format(start, 'MMM dd')} - ${format(end, 'dd')}`;
     } else {
-      return isThisMonth(date) ? 'Total Leads (Month)' : `Leads (${format(date, 'MMM yyyy')})`;
+      return isSameMonth(date, today) ? 'Total Leads (Month)' : `Leads (${format(date, 'MMM yyyy')})`;
     }
   };
 
   const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     const isActive = activeSummaryType === type;
       const displayTitle = getSummaryTitle(type, title);
+
+    const getDateDisplay = () => {
+      const today = new Date();
+      switch (type) {
+        case 'today':
+          return format(today, 'MMM dd, yyyy');
+        case 'week':
+          const weekStart = startOfWeek(today, { weekStartsOn: 1 });
+          const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
+          return `${format(weekStart, 'MMM dd')} - ${format(weekEnd, 'MMM dd')}`;
+        case 'month':
+          return format(today, 'MMMM yyyy');
+        default:
+          return '';
+      }
+    };
 
     const handleConfigPress = (e?: any) => {
       if (e && e.stopPropagation) e.stopPropagation();
@@ -690,9 +834,7 @@ export default function Leads() {
           onPress={() => {
             const newType = activeSummaryType === type ? null : type;
             setActiveSummaryType(newType);
-            if (newType !== null) {
-              setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
-            }
+            setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
           }}
         >
           <View style={{ flex: 1 }}>
@@ -701,6 +843,9 @@ export default function Leads() {
               <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>
                 {displayTitle}
               </Text>
+              {isActive && (
+                <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : 9 }]}>{getDateDisplay()}</Text>
+              )}
             </View>
           </View>
           
@@ -745,11 +890,13 @@ export default function Leads() {
       </TouchableOpacity>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700' }]}>{lead.lead_id || '-'}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
+        <TouchableOpacity onPress={() => handleConvertSingleLead(lead)} style={styles.actionBtn}><Ionicons name="arrow-forward-outline" size={20} color={colors.success} /></TouchableOpacity>
         <TouchableOpacity onPress={() => { setSelectedLeadForDetail(lead); setIsDetailModalVisible(true); }} style={styles.actionBtn}><Ionicons name="eye-outline" size={20} color={colors.info} /></TouchableOpacity>
         <TouchableOpacity onPress={() => handleEdit(lead)} style={styles.actionBtn}><Ionicons name="create-outline" size={20} color={colors.primary} /></TouchableOpacity>
         <TouchableOpacity onPress={() => handleDelete(lead.id)} style={styles.actionBtn}><Ionicons name="trash-outline" size={20} color={colors.error} /></TouchableOpacity>
       </View>
-      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.event_date || '-'}</Text>
+      {/* convert icon moved inside actions, no separate column any more */}
+      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.event_date ? format(parseISO(lead.event_date), 'dd/MM/yyyy') : '-'}</Text>
       <Text style={[styles.colName, styles.leadName, { color: colors.text }]} numberOfLines={1}>{lead.name}</Text>
       <Text style={[styles.colCompany, { color: colors.textSecondary }]} numberOfLines={1}>{lead.company_name || '-'}</Text>
       <Text style={[styles.colPhone, { color: colors.textSecondary }]}>{lead.phone.startsWith('+91') ? `+91 ${lead.phone.slice(3)}` : lead.phone}</Text>
@@ -762,7 +909,7 @@ export default function Leads() {
           </Text>
         </View>
       </View>
-      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.next_follow_up || '-'}</Text>
+      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.next_follow_up ? format(parseISO(lead.next_follow_up), 'dd/MM/yyyy') : '-'}</Text>
       <Text style={[styles.colNotes, { color: colors.textSecondary }]} numberOfLines={1}>{lead.notes || '-'}</Text>
     </View>
   );
@@ -790,34 +937,22 @@ export default function Leads() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.summaryContainer}>
         <View style={styles.summaryCardsRow}>
-          <SummaryCard type="today" title="Total Leads (Today)" count={stats.today} icon="people" gradient={['#3b82f6', '#2563eb']} />
+          <SummaryCard type="today" title="Total Leads (Today)" count={displayStats.today} icon="people" gradient={['#3b82f6', '#2563eb']} />
           <SummaryCard 
             type="week" 
             title="Total Leads (Week)" 
-            count={stats.week} 
+            count={displayStats.week} 
             icon="calendar" 
             gradient={['#8b5cf6', '#7c3aed']} 
           />
           <SummaryCard 
             type="month" 
             title="Total Leads (Month)" 
-            count={stats.month} 
+            count={displayStats.month} 
             icon="calendar-outline" 
             gradient={['#ec4899', '#db2777']} 
           />
         </View>
-        {activeSummaryType && (
-          <TouchableOpacity 
-            style={[styles.clearSummaryBtn, { backgroundColor: colors.error + '15', borderColor: colors.error + '30' }]} 
-            onPress={resetSummarySelection}
-            activeOpacity={0.7}
-          >
-            <View style={[styles.clearSummaryBadge, { backgroundColor: colors.error }]}>
-              <Ionicons name="close" size={14} color="#fff" />
-            </View>
-            <Text style={[styles.clearSummaryText, { color: colors.error }]}>Reset Filter</Text>
-          </TouchableOpacity>
-        )}
       </View>
 
       <View style={styles.filterBar}>
@@ -828,10 +963,19 @@ export default function Leads() {
         </View>
 
         <View style={styles.actionButtons}>
+          {isAnyFilterActive && (
+            <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={clearFilters} title="Reset filters">
+              <Ionicons name="refresh-outline" size={20} color={colors.error} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsFilterModalVisible(true)}><Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? colors.primary : colors.textSecondary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsSortModalVisible(true)}><Ionicons name="swap-vertical" size={20} color={colors.primary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={handleImportExcel}><Ionicons name="document-text-outline" size={20} color={colors.info} /></TouchableOpacity>
-          <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]} onPress={() => { setEditingLeadId(null); setFormData({ name: '', company_name: '', phone: '', email: '', source: '', stage: 'new', event_date: format(new Date(), 'yyyy-MM-dd'), next_follow_up: '', notes: '' }); setModalVisible(true); }}><Ionicons name="add" size={24} color="#fff" /><Text style={styles.addBtnText}>Add Lead</Text></TouchableOpacity>
+          <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]} onPress={() => {
+                setEditingLeadId(null);
+                setFormData({ lead_id: getNextLeadId(), name: '', company_name: '', phone: '', email: '', source: '', stage: 'new', event_date: format(new Date(), 'yyyy-MM-dd'), next_follow_up: '', notes: '' });
+                setModalVisible(true);
+              }}><Ionicons name="add" size={24} color="#fff" /><Text style={styles.addBtnText}>Add Lead</Text></TouchableOpacity>
         </View>
       </View>
 
@@ -853,12 +997,25 @@ export default function Leads() {
               <View style={styles.modalHeader}><Text style={[styles.modalTitle, { color: colors.text }]}>{editingLeadId ? 'Edit Lead' : 'Add New Lead'}</Text><TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={28} color={colors.textSecondary} /></TouchableOpacity></View>
               <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}>
                 <View style={styles.inputGroup}>
-                  <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date</Text>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Lead ID</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                    value={formData.lead_id}
+                    onChangeText={handleLeadIdChange}
+                    placeholder="e.g. L0001"
+                    placeholderTextColor={colors.textTertiary}
+                    maxLength={5}
+                    autoCapitalize="characters"
+                  />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Date</Text>
                   <TouchableOpacity
                     style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
                     onPress={() => { Keyboard.dismiss(); setShowEventDatePicker(true); }}
                   >
-                    <Text style={{ color: colors.text }}>{formData.event_date}</Text>
+                    <Text style={{ color: colors.text }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd/MM/yyyy') : ''}</Text>
                     <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
                   {showEventDatePicker && (
@@ -1201,8 +1358,8 @@ export default function Leads() {
                     </View>
                   </View>
                 </View>
-                <DetailRow label="Event Date" value={selectedLeadForDetail?.event_date} icon="calendar-outline" />
-                <DetailRow label="Next Follow Up" value={selectedLeadForDetail?.next_follow_up} icon="alarm-outline" />
+                <DetailRow label="Date" value={selectedLeadForDetail?.event_date ? format(parseISO(selectedLeadForDetail.event_date), 'dd/MM/yyyy') : undefined} icon="calendar-outline" />
+                <DetailRow label="Next Follow Up" value={selectedLeadForDetail?.next_follow_up ? format(parseISO(selectedLeadForDetail.next_follow_up), 'dd/MM/yyyy') : undefined} icon="alarm-outline" />
                 <DetailRow label="Notes" value={selectedLeadForDetail?.notes} icon="document-text-outline" />
                 <View style={{ height: 20 }} />
                 <TouchableOpacity 
@@ -1236,6 +1393,7 @@ const styles = StyleSheet.create({
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12 },
   summaryCount: { color: '#fff', fontWeight: '800' },
   summaryTitle: { color: 'rgba(255,255,255,0.8)', fontWeight: '600' },
+  summarySubtitle: { color: 'rgba(255,255,255,0.6)', fontWeight: '500', marginTop: 2 },
   summaryIconContainer: { borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
   summaryCardActions: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   summaryActionIcon: { borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
@@ -1247,21 +1405,21 @@ const styles = StyleSheet.create({
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 48, paddingHorizontal: 12, borderRadius: 16, elevation: 2 },
   addBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   tableContainer: { flex: 1, borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden' },
-  tableHeader: { flexDirection: 'row', padding: 16, borderBottomWidth: 1 },
+  tableHeader: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, gap: 12 },
   columnHeader: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textAlign: 'center' },
-  tableRow: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, alignItems: 'center' },
+  tableRow: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, alignItems: 'center', gap: 12 },
   colSelect: { width: 40, alignItems: 'center', justifyContent: 'center' },
-  colId: { width: 80, textAlign: 'center' },
-  colActions: { width: 120, alignItems: 'center', justifyContent: 'center' },
-  colDate: { width: 120, textAlign: 'center' },
-  colName: { width: 180, textAlign: 'center' },
-  colCompany: { width: 180, textAlign: 'center' },
-  colPhone: { width: 150, textAlign: 'center' },
-  colEmail: { width: 200, textAlign: 'center' },
-  colSource: { width: 120, textAlign: 'center' },
-  colStage: { width: 120, alignItems: 'center', justifyContent: 'center' },
+  colId: { width: 70, textAlign: 'center' },
+  colActions: { width: 140, alignItems: 'center', justifyContent: 'center' },
+  colDate: { width: 100, textAlign: 'center' },
+  colName: { width: 150, textAlign: 'center' },
+  colCompany: { width: 150, textAlign: 'center' },
+  colPhone: { width: 120, textAlign: 'center' },
+  colEmail: { width: 180, textAlign: 'center' },
+  colSource: { width: 100, textAlign: 'center' },
+  colStage: { width: 100, alignItems: 'center', justifyContent: 'center' },
   colIdName: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' },
-  colNotes: { width: 250, textAlign: 'center' },
+  colNotes: { width: 180, textAlign: 'center' },
   stageBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
   stageText: { fontSize: 12, fontWeight: '700' },
   rowActions: { flexDirection: 'row', gap: 12, alignItems: 'center' },

@@ -1,4 +1,14 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
+
+// return number of calendar weeks covering the given month/year (4-6).
+const getWeeksInMonthCount = (month: number, year: number) => {
+  const firstDayOfMonth = new Date(year, month, 1);
+  const lastDayOfMonth = new Date(year, month + 1, 0);
+  const firstWeekStart = startOfWeek(firstDayOfMonth, { weekStartsOn: 1 });
+  const lastWeekEnd = endOfWeek(lastDayOfMonth, { weekStartsOn: 1 });
+  const diffInDays = Math.ceil((lastWeekEnd.getTime() - firstWeekStart.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.ceil(diffInDays / 7);
+};
 import {
   View,
   Text,
@@ -19,8 +29,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
 import { LinearGradient } from 'expo-linear-gradient';
-import { format, isToday, isThisWeek, isThisMonth, parseISO } from 'date-fns';
-import { useRouter } from 'expo-router';
+import { format, isToday, isThisWeek, isThisMonth, parseISO, startOfWeek, endOfWeek, addWeeks, differenceInCalendarWeeks, isSameDay, isSameWeek, isSameMonth } from 'date-fns';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 
 interface Client {
   id: number;
@@ -55,6 +66,12 @@ const CLIENT_STATUSES = [
   { key: 'cancelled', label: 'Cancelled', color: '#ef4444' },
 ];
 
+// month names used in summary picker
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
 type SortKey = 'id_asc' | 'id_desc' | 'date_desc' | 'date_asc' | 'name_asc';
 
 export default function Clients() {
@@ -62,12 +79,30 @@ export default function Clients() {
   const isTablet = width > 768;
   const { colors } = useThemeStore();
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const autoEditClientId = params?.autoEditClientId ? parseInt(params.autoEditClientId as string) : null;
 
   // Data State
   const [clients, setClients] = useState<Client[]>([]);
   const [stats, setStats] = useState({ today: 0, week: 0, month: 0 });
   const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Summary filter state
+  const [activeSummaryType, setActiveSummaryType] = useState<'today' | 'week' | 'month' | null>(null);
+  const [summaryDates, setSummaryDates] = useState({
+    today: new Date(),
+    week: new Date(),
+    month: new Date()
+  });
+  const [showSummaryPicker, setShowSummaryPicker] = useState<'today' | 'week' | 'month' | null>(null);
+  const [tempMonth, setTempMonth] = useState(new Date().getMonth());
+  const [tempYear, setTempYear] = useState(new Date().getFullYear());
+  const [tempWeek, setTempWeek] = useState(1);
+  const [selectedWeekMonthYear, setSelectedWeekMonthYear] = useState<{month:number;year:number}>({
+    month: new Date().getMonth(),
+    year: new Date().getFullYear()
+  });
 
   // Custom Options State
   const [eventTypes, setEventTypes] = useState<AppOption[]>([]);
@@ -84,6 +119,8 @@ export default function Clients() {
   const [isPackagePickerVisible, setIsPackagePickerVisible] = useState(false);
   const [isSourcePickerVisible, setIsSourcePickerVisible] = useState(false);
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
+  const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
+  const [selectedClientForDetail, setSelectedClientForDetail] = useState<Client | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -117,14 +154,15 @@ export default function Clients() {
       let todayCount = 0;
       let weekCount = 0;
       let monthCount = 0;
+      const today = new Date();
 
       allClients.forEach(client => {
         if (client.event_date) {
           try {
             const date = parseISO(client.event_date);
-            if (isToday(date)) todayCount++;
-            if (isThisWeek(date, { weekStartsOn: 1 })) weekCount++;
-            if (isThisMonth(date)) monthCount++;
+            if (isSameDay(date, today)) todayCount++;
+            if (isSameWeek(date, today, { weekStartsOn: 1 })) weekCount++;
+            if (isSameMonth(date, today)) monthCount++;
           } catch (e) {}
         }
       });
@@ -146,12 +184,63 @@ export default function Clients() {
     }
   }, []);
 
+  const onSummaryDatePickerChange = (event: any, date?: Date) => {
+    console.log('onSummaryDatePickerChange called', { event, date });
+    if (Platform.OS === 'android') {
+      if (event.type === 'dismissed') {
+        setShowSummaryPicker(null);
+        return;
+      }
+    }
+    if (date) {
+      console.log('Setting today filter with date:', date);
+      setSummaryDates(prev => ({ ...prev, today: date }));
+      // apply filter immediately after selecting
+      setActiveSummaryType(null);
+      // clear other UI filters (search/status)
+      setSearchQuery('');
+      setStatusFilter('all');
+      setTimeout(() => {
+        setActiveSummaryType('today');
+        setShowSummaryPicker(null);
+      }, 10);
+    }
+  };
+
   useEffect(() => {
     loadData();
   }, [loadData]);
 
+  // Auto-open edit form if navigated from lead conversion
+  useEffect(() => {
+    if (autoEditClientId && clients.length > 0) {
+      const clientToEdit = clients.find(c => c.id === autoEditClientId);
+      if (clientToEdit) {
+        handleEdit(clientToEdit);
+      }
+    }
+  }, [autoEditClientId, clients]);
+
   const processedClients = useMemo(() => {
     let result = [...clients];
+
+    // apply summary filter first if active
+    if (activeSummaryType) {
+      result = result.filter(c => {
+        if (!c.event_date) return false;
+        try {
+          const d = parseISO(c.event_date);
+          switch (activeSummaryType) {
+            case 'today': return isSameDay(d, summaryDates.today);
+            case 'week': return isSameWeek(d, summaryDates.week, { weekStartsOn: 1 });
+            case 'month': return isSameMonth(d, summaryDates.month);
+          }
+        } catch {
+          return false;
+        }
+        return true;
+      });
+    }
 
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
@@ -179,8 +268,33 @@ export default function Clients() {
       }
     });
 
+    // sequencing is handled by FlatList index when rendering; we keep db ids untouched
     return result;
-  }, [clients, searchQuery, statusFilter, sortBy]);
+  }, [clients, searchQuery, statusFilter, sortBy, activeSummaryType, summaryDates]);
+
+  const displayStats = useMemo(() => {
+    let todayCount = 0;
+    let weekCount = 0;
+    let monthCount = 0;
+    const today = new Date();
+
+    processedClients.forEach(client => {
+      if (client.event_date) {
+        try {
+          const date = parseISO(client.event_date);
+          if (isSameDay(date, today)) todayCount++;
+          if (isSameWeek(date, today, { weekStartsOn: 1 })) weekCount++;
+          if (isSameMonth(date, today)) monthCount++;
+        } catch (e) {}
+      }
+    });
+
+    return {
+      today: todayCount,
+      week: weekCount,
+      month: monthCount
+    };
+  }, [processedClients]);
 
   const handleSaveClient = async () => {
     if (!formData.name || !formData.phone) {
@@ -252,6 +366,60 @@ export default function Clients() {
     ]);
   };
 
+  const handleRestore = (client: Client) => {
+    Alert.alert('Restore Lead', 'Copy this client back to leads?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Restore', onPress: async () => {
+          try {
+            const db = getDatabase();
+            if (!db) return;
+
+            // attempt to find an existing lead by phone (unique key)
+            const existing: any[] = await db.getAllAsync('SELECT id FROM leads WHERE phone = ? LIMIT 1', [client.phone]);
+            if (existing.length > 0) {
+              const lid = existing[0].id;
+              await db.runAsync(
+                'UPDATE leads SET name=?, email=?, company_name=?, event_type=?, event_date=?, source=?, stage=?, notes=? WHERE id=?',
+                [
+                  client.name,
+                  client.email || null,
+                  client.event_location || null, // restore company name from location
+                  client.event_type || null,
+                  client.event_date || null,
+                  client.lead_source || null,
+                  'new',
+                  client.notes || null,
+                  lid
+                ]
+              );
+            } else {
+              await db.runAsync(
+                'INSERT INTO leads (name, phone, email, company_name, event_type, event_date, source, stage, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [
+                  client.name,
+                  client.phone,
+                  client.email || null,
+                  client.event_location || null,
+                  client.event_type || null,
+                  client.event_date || null,
+                  client.lead_source || null,
+                  'new',
+                  client.notes || null
+                ]
+              );
+            }
+            // delete client record after restoring
+            await db.runAsync('DELETE FROM clients WHERE id = ?', [client.id]);
+
+            Alert.alert('Success', 'Client restored to leads');
+            loadData();
+          } catch (e) {
+            console.error('Restore failed', e);
+            Alert.alert('Error', 'Failed to restore lead');
+          }
+        }}
+    ]);
+  };
   const resetForm = () => {
     setFormData({
       name: '',
@@ -269,6 +437,25 @@ export default function Clients() {
     setEditingClientId(null);
   };
 
+  const resetSummarySelection = () => {
+    const now = new Date();
+    setSearchQuery('');
+    setStatusFilter('all');
+    setSummaryDates({
+      today: now,
+      week: now,
+      month: now
+    });
+    setSelectedWeekMonthYear({ month: now.getMonth(), year: now.getFullYear() });
+    setTempMonth(now.getMonth());
+    setTempYear(now.getFullYear());
+    setTempWeek(1);
+    // Reload data to recalculate stats with today's dates
+    loadData();
+    // Apply 'today' filter after reset
+    setTimeout(() => setActiveSummaryType('today'), 50);
+  };
+
   const togglePackage = (pkg: string) => {
     setFormData(prev => {
       const selected = prev.selectedPackages.includes(pkg)
@@ -282,24 +469,98 @@ export default function Clients() {
     return CLIENT_STATUSES.find(s => s.key === (status || 'booked').toLowerCase())?.color || colors.textTertiary;
   };
 
-  const SummaryCard = ({ title, count, icon, gradient }: any) => (
-    <LinearGradient
-      colors={gradient}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={[styles.summaryCard, { height: isTablet ? 100 : 80 }]}
-    >
-      <View style={styles.summaryContent}>
-        <View>
-          <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count}</Text>
-          <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]}>{title}</Text>
-        </View>
-        <View style={[styles.summaryIconContainer, { width: isTablet ? 44 : 36, height: isTablet ? 44 : 36 }]}>
-          <Ionicons name={icon} size={isTablet ? 28 : 24} color="#fff" />
-        </View>
+  const DetailRow = ({ label, value, icon }: { label: string, value: string | undefined, icon: any }) => (
+    <View style={styles.detailRow}>
+      <View style={[styles.detailIconContainer, { backgroundColor: colors.primary + '15' }]}>
+        <Ionicons name={icon} size={20} color={colors.primary} />
       </View>
-    </LinearGradient>
+      <View style={styles.detailTextContainer}>
+        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>{label}</Text>
+        <Text style={[styles.detailValue, { color: colors.text }]}>{value || '-'}</Text>
+      </View>
+    </View>
   );
+
+const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
+    const isActive = activeSummaryType === type;
+
+    const getDateDisplay = () => {
+      const today = new Date();
+      switch (type) {
+        case 'today':
+          return format(today, 'MMM dd, yyyy');
+        case 'week':
+          const weekStart = startOfWeek(today, { weekStartsOn: 1 });
+          const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
+          return `${format(weekStart, 'MMM dd')} - ${format(weekEnd, 'MMM dd')}`;
+        case 'month':
+          return format(today, 'MMMM yyyy');
+        default:
+          return '';
+      }
+    };
+
+    const handleConfigPress = (e?: any) => {
+      console.log('handleConfigPress called for type:', type);
+      if (e && e.stopPropagation) e.stopPropagation();
+      if (type === 'month') {
+        setTempMonth(summaryDates.month.getMonth());
+        setTempYear(summaryDates.month.getFullYear());
+      } else if (type === 'week') {
+        setTempMonth(selectedWeekMonthYear.month);
+        setTempYear(selectedWeekMonthYear.year);
+        const monthStart = startOfWeek(new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1), { weekStartsOn: 1 });
+        const idx = differenceInCalendarWeeks(summaryDates.week, monthStart, { weekStartsOn: 1 }) + 1;
+        setTempWeek(idx > 0 ? idx : 1);
+      }
+      console.log('Setting showSummaryPicker to:', type);
+      setShowSummaryPicker(type);
+    };
+
+    return (
+      <LinearGradient
+        colors={gradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[
+          styles.summaryCard,
+          { height: isTablet ? 100 : 80 },
+          isActive && { borderWidth: 2, borderColor: '#fff' }
+        ]}
+      >
+        <TouchableOpacity
+          style={styles.summaryContent}
+          activeOpacity={0.8}
+          onPress={() => {
+            console.log('Card pressed for type:', type);
+            const newType = activeSummaryType === type ? null : type;
+            console.log('Toggling activeSummaryType to:', newType);
+            setActiveSummaryType(newType);
+            setSearchQuery('');
+            setStatusFilter('all');
+          }}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count}</Text>
+            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]}>{title}</Text>
+            {isActive && (
+              <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : 9 }]}>{getDateDisplay()}</Text>
+            )}
+          </View>
+          <TouchableOpacity
+            onPress={(e) => {
+              e.stopPropagation();
+              handleConfigPress(e);
+            }}
+            style={[styles.summaryIconContainer, { width: isTablet ? 44 : 36, height: isTablet ? 44 : 36 }]}
+            activeOpacity={0.7}
+          >
+            <Ionicons name={icon} size={isTablet ? 28 : 24} color="#fff" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </LinearGradient>
+    );
+  };
 
   const TableHeader = () => (
     <View style={[styles.tableHeader, { borderBottomColor: colors.border, backgroundColor: colors.surface }]}>
@@ -318,10 +579,16 @@ export default function Clients() {
     </View>
   );
 
-  const renderClientRow = ({ item: client }: { item: Client }) => (
+  const renderClientRow = ({ item: client, index }: { item: Client; index: number }) => (
     <View key={client.id} style={[styles.tableRow, { borderBottomColor: colors.border }]}>
-      <Text style={[styles.colId, { color: colors.primary, fontWeight: '700' }]} numberOfLines={1}>{client.client_id || '-'}</Text>
+      <Text style={[styles.colId, { color: colors.primary, fontWeight: '700' }]} numberOfLines={1}>{index + 1}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
+        <TouchableOpacity onPress={() => handleRestore(client)} style={styles.actionBtn}>
+          <Ionicons name="arrow-back-outline" size={20} color={colors.success} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => { setSelectedClientForDetail(client); setIsDetailModalVisible(true); }} style={styles.actionBtn}>
+          <Ionicons name="eye-outline" size={20} color={colors.info} />
+        </TouchableOpacity>
         <TouchableOpacity onPress={() => handleEdit(client)} style={styles.actionBtn}>
           <Ionicons name="create-outline" size={20} color={colors.primary} />
         </TouchableOpacity>
@@ -338,7 +605,7 @@ export default function Clients() {
       <Text style={[styles.colPrice, { color: colors.textSecondary }]}>₹{(client.total_price || 0).toLocaleString()}</Text>
       <Text style={[styles.colSource, { color: colors.textSecondary }]} numberOfLines={1}>{client.lead_source || '-'}</Text>
       <Text style={[styles.colNotes, { color: colors.textSecondary }]} numberOfLines={1}>{client.notes || '-'}</Text>
-      <View style={styles.colStatus}>
+      <View style={[styles.colStatus, { alignItems: 'center', justifyContent: 'center' }]}>
         <View style={[styles.statusBadge, { backgroundColor: getStatusColor(client.status) + '20', borderColor: getStatusColor(client.status) }]}>
           <Text style={[styles.statusText, { color: getStatusColor(client.status) }]}>{client.status || 'Booked'}</Text>
         </View>
@@ -372,9 +639,9 @@ export default function Clients() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Summary Cards */}
       <View style={styles.summaryContainer}>
-        <SummaryCard title="Today" count={stats.today} icon="today-outline" gradient={['#3b82f6', '#2563eb']} />
-        <SummaryCard title="This Week" count={stats.week} icon="calendar-outline" gradient={['#8b5cf6', '#7c3aed']} />
-        <SummaryCard title="This Month" count={stats.month} icon="pie-chart-outline" gradient={['#ec4899', '#db2777']} />
+        <SummaryCard type="today" title="Today" count={displayStats.today} icon="today-outline" gradient={['#3b82f6', '#2563eb']} />
+        <SummaryCard type="week" title="This Week" count={displayStats.week} icon="calendar-outline" gradient={['#8b5cf6', '#7c3aed']} />
+        <SummaryCard type="month" title="This Month" count={displayStats.month} icon="pie-chart-outline" gradient={['#ec4899', '#db2777']} />
       </View>
 
       {/* Filter and Search Bar */}
@@ -394,6 +661,16 @@ export default function Clients() {
             </TouchableOpacity>
           ) : null}
         </View>
+
+        {(activeSummaryType !== null || searchQuery) && (
+          <TouchableOpacity
+            style={[styles.iconButton, { backgroundColor: colors.surface }]}
+            onPress={resetSummarySelection}
+            title="Reset filters"
+          >
+            <Ionicons name="refresh-outline" size={20} color={colors.error} />
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={[styles.iconButton, { backgroundColor: colors.surface }]}
@@ -618,6 +895,49 @@ export default function Clients() {
         </View>
       </Modal>
 
+      {/* Client Detail Modal */}
+      <Modal visible={isDetailModalVisible} animationType="fade" transparent={true} onRequestClose={() => setIsDetailModalVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setIsDetailModalVisible(false)}>
+          <View style={[styles.modalContainer, { width: '90%' }]}> 
+            <View style={[styles.modalContent, { backgroundColor: colors.surface }]}> 
+              <View style={styles.modalHeader}> 
+                <View> 
+                  <Text style={[styles.modalTitle, { color: colors.text }]}>Client Details</Text> 
+                  <Text style={{ color: colors.primary, fontWeight: '700' }}>{selectedClientForDetail?.client_id}</Text> 
+                </View> 
+                <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}> 
+                  <Ionicons name="close" size={28} color={colors.textSecondary} /> 
+                </TouchableOpacity> 
+              </View> 
+              <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}> 
+                <DetailRow label="Name" value={selectedClientForDetail?.name} icon="person-outline" /> 
+                <DetailRow label="Phone" value={selectedClientForDetail?.phone} icon="call-outline" /> 
+                <DetailRow label="Email" value={selectedClientForDetail?.email} icon="mail-outline" /> 
+                <DetailRow label="Event Type" value={selectedClientForDetail?.event_type} icon="calendar-outline" /> 
+                <DetailRow label="Event Date" value={selectedClientForDetail?.event_date} icon="calendar-outline" /> 
+                <DetailRow label="Location" value={selectedClientForDetail?.event_location} icon="location-outline" /> 
+                <DetailRow label="Package" value={selectedClientForDetail?.package_name} icon="bag-outline" /> 
+                <DetailRow label="Total Price" value={selectedClientForDetail?.total_price ? `₹${selectedClientForDetail.total_price.toLocaleString()}` : undefined} icon="cash-outline" /> 
+                <DetailRow label="Lead Source" value={selectedClientForDetail?.lead_source} icon="share-social-outline" /> 
+                <DetailRow label="Status" value={selectedClientForDetail?.status} icon="checkmark-done-outline" /> 
+                <DetailRow label="Notes" value={selectedClientForDetail?.notes} icon="document-text-outline" /> 
+                <TouchableOpacity 
+                  style={[styles.submitButton, { backgroundColor: colors.primary, width: '100%', marginBottom: 10 }]} 
+                  onPress={() => {
+                    if (selectedClientForDetail) {
+                      setIsDetailModalVisible(false);
+                      handleEdit(selectedClientForDetail);
+                    }
+                  }}
+                >
+                  <Text style={styles.submitButtonText}>Edit Client</Text>
+                </TouchableOpacity>
+              </ScrollView> 
+            </View> 
+          </View> 
+        </TouchableOpacity>
+      </Modal>
+
       {/* Sort Modal */}
       <Modal visible={isSortModalVisible} transparent animationType="fade" onRequestClose={() => setIsSortModalVisible(false)}>
         <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsSortModalVisible(false)}>
@@ -633,6 +953,157 @@ export default function Clients() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Summary Filter Custom Pickers */}
+      {showSummaryPicker === 'today' ? (
+        <DateTimePicker
+          value={summaryDates.today}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={onSummaryDatePickerChange}
+        />
+      ) : (
+        <Modal visible={showSummaryPicker !== null} transparent animationType="fade" onRequestClose={() => setShowSummaryPicker(null)}>
+          <View style={styles.modalOverlay}>
+            <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}> 
+              <View style={styles.modalHeader}> 
+                <Text style={[styles.modalTitle, { color: colors.text }]}> 
+                  {showSummaryPicker === 'month' ? 'Select Month & Year' : 'Select Month & Week'} 
+                </Text> 
+                <TouchableOpacity onPress={() => setShowSummaryPicker(null)}> 
+                  <Ionicons name="close" size={24} color={colors.textSecondary} /> 
+                </TouchableOpacity> 
+              </View> 
+
+              {showSummaryPicker === 'month' ? (
+                <ScrollView contentContainerStyle={{ padding: 20 }}>
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Month</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>
+                    {MONTHS.map((m, i) => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[
+                          styles.filterChip,
+                          {
+                            backgroundColor: tempMonth === i ? colors.primary : colors.background,
+                            borderColor: tempMonth === i ? colors.primary : colors.border,
+                            width: '23%',
+                            height: 40,
+                            paddingHorizontal: 0,
+                            justifyContent: 'center',
+                            alignItems: 'center'
+                          }
+                        ]}
+                        onPress={() => setTempMonth(i)}
+                      >
+                        <Text style={{ color: tempMonth === i ? '#fff' : colors.textSecondary }}>{m.slice(0,3)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Year</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+                    <TouchableOpacity onPress={() => setTempYear(prev => prev - 1)}><Ionicons name="chevron-back" size={24} color={colors.textSecondary} /></TouchableOpacity>
+                    <Text style={{ color: colors.text, fontSize: 18 }}>{tempYear}</Text>
+                    <TouchableOpacity onPress={() => setTempYear(prev => prev + 1)}><Ionicons name="chevron-forward" size={24} color={colors.textSecondary} /></TouchableOpacity>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[styles.submitButton, { backgroundColor: colors.primary, height: 52 }]}
+                    onPress={() => {
+                      console.log('Month apply pressed:', { tempMonth, tempYear });
+                      // apply month filter
+                      setSummaryDates(prev => ({ ...prev, month: new Date(tempYear, tempMonth, 1) }));
+                      setActiveSummaryType(null);
+                      setSearchQuery('');
+                      setStatusFilter('all');
+                      setTimeout(() => {
+                        setActiveSummaryType('month');
+                        setShowSummaryPicker(null);
+                      }, 10);
+                    }}
+                  >
+                    <Text style={styles.submitButtonText}>Apply</Text>
+                  </TouchableOpacity>
+                </ScrollView>
+              ) : (
+                <ScrollView contentContainerStyle={{ padding: 20 }}>
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Month</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>
+                    {MONTHS.map((m, i) => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[
+                          styles.filterChip,
+                          {
+                            backgroundColor: tempMonth === i ? colors.primary : colors.background,
+                            borderColor: tempMonth === i ? colors.primary : colors.border,
+                            width: '23%',
+                            height: 40,
+                            paddingHorizontal: 0,
+                            justifyContent: 'center',
+                            alignItems: 'center'
+                          }
+                        ]}
+                        onPress={() => {
+                          setTempMonth(i);
+                          setTempWeek(1);
+                        }}
+                      >
+                        <Text style={{ color: tempMonth === i ? '#fff' : colors.textSecondary }}>{m.slice(0,3)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Week</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 24 }}>
+                    {Array.from({ length: getWeeksInMonthCount(tempMonth, tempYear) }, (_, i) => i + 1).map((w) => (
+                      <TouchableOpacity
+                        key={w}
+                        style={[
+                          styles.filterChip,
+                          {
+                            backgroundColor: tempWeek === w ? colors.primary : colors.background,
+                            borderColor: tempWeek === w ? colors.primary : colors.border,
+                            paddingHorizontal: 12,
+                            height: 40,
+                            justifyContent: 'center',
+                            alignItems: 'center'
+                          }
+                        ]}
+                        onPress={() => setTempWeek(w)}
+                      >
+                        <Text style={{ color: tempWeek === w ? '#fff' : colors.textSecondary }}>{w}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+
+                  <TouchableOpacity
+                    style={[styles.submitButton, { backgroundColor: colors.primary, height: 52 }]}
+                    onPress={() => {
+                      console.log('Week apply pressed:', { tempMonth, tempYear, tempWeek });
+                      // compute the chosen week start date
+                      const monthStart = startOfWeek(new Date(tempYear, tempMonth, 1), { weekStartsOn: 1 });
+                      const weekDate = addWeeks(monthStart, tempWeek - 1);
+                      setSummaryDates(prev => ({ ...prev, week: weekDate }));
+                      setSelectedWeekMonthYear({ month: tempMonth, year: tempYear });
+                      setActiveSummaryType(null);
+                      setSearchQuery('');
+                      setStatusFilter('all');
+                      setTimeout(() => {
+                        setActiveSummaryType('week');
+                        setShowSummaryPicker(null);
+                      }, 10);
+                    }}
+                  >
+                    <Text style={styles.submitButtonText}>Apply</Text>
+                  </TouchableOpacity>
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+      )}
 
       {/* Event Type Picker Modal */}
       <Modal visible={isEventTypePickerVisible} transparent={true} animationType="fade" onRequestClose={() => setIsEventTypePickerVisible(false)}>
@@ -694,6 +1165,7 @@ const styles = StyleSheet.create({
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryCount: { color: '#fff', fontWeight: '800' },
   summaryTitle: { color: 'rgba(255,255,255,0.8)', fontWeight: '600' },
+  summarySubtitle: { color: 'rgba(255,255,255,0.6)', fontWeight: '500', marginTop: 2 },
   summaryIconContainer: { borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
 
   filterBar: { flexDirection: 'row', paddingHorizontal: 16, gap: 12, marginBottom: 12, alignItems: 'center' },
@@ -709,28 +1181,28 @@ const styles = StyleSheet.create({
   filterChipText: { fontSize: 13, fontWeight: '700' },
 
   tableContainer: { flex: 1, borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden' },
-  tableHeader: { flexDirection: 'row', padding: 16, borderBottomWidth: 1 },
-  columnHeader: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
-  tableRow: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, alignItems: 'center' },
+  tableHeader: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, gap: 12 },
+  columnHeader: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textAlign: 'center' },
+  tableRow: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, alignItems: 'center', gap: 12 },
 
-  colId: { width: 80 },
-  colActions: { width: 100 },
-  colDate: { width: 120 },
-  colName: { width: 180 },
-  colPhone: { width: 130 },
-  colEmail: { width: 180 },
-  colEvent: { width: 120 },
-  colLocation: { width: 150 },
-  colPackage: { width: 200 },
-  colPrice: { width: 110, textAlign: 'right', paddingRight: 10 },
-  colSource: { width: 140, paddingLeft: 10 },
-  colNotes: { width: 250 },
-  colStatus: { width: 120 },
+  colId: { width: 70, textAlign: 'center' },
+  colActions: { width: 100, alignItems: 'center', justifyContent: 'center' },
+  colDate: { width: 100, textAlign: 'center' },
+  colName: { width: 150, textAlign: 'center' },
+  colPhone: { width: 120, textAlign: 'center' },
+  colEmail: { width: 150, textAlign: 'center' },
+  colEvent: { width: 100, textAlign: 'center' },
+  colLocation: { width: 130, textAlign: 'center' },
+  colPackage: { width: 150, textAlign: 'center' },
+  colPrice: { width: 100, textAlign: 'center' },
+  colSource: { width: 120, textAlign: 'center' },
+  colNotes: { width: 150, textAlign: 'center' },
+  colStatus: { width: 90, textAlign: 'center' },
 
   rowActions: { flexDirection: 'row', gap: 12, alignItems: 'center' },
   actionBtn: { padding: 4 },
   clientName: { fontSize: 15, fontWeight: '700' },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, borderWidth: 1, alignSelf: 'flex-start' },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   statusText: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
 
   emptyContainer: { padding: 80, alignItems: 'center', width: Dimensions.get('window').width },
@@ -767,4 +1239,9 @@ const styles = StyleSheet.create({
   sortOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderRadius: 16 },
   sortOptionLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sortOptionLabel: { fontSize: 16, fontWeight: '600' },
+  detailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 15 },
+  detailIconContainer: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  detailTextContainer: { flex: 1 },
+  detailLabel: { fontSize: 12, fontWeight: '600', marginBottom: 2 },
+  detailValue: { fontSize: 16, fontWeight: '600' },
 });
