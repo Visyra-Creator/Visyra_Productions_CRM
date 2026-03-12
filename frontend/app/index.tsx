@@ -57,6 +57,8 @@ export default function Dashboard() {
     monthlyProfit: 0,
     todaysShoots: [] as any[],
     todaysFollowUps: [] as any[],
+    todaysClientFollowUps: [] as any[],
+    todaysPayments: [] as any[],
   });
   const [timelineData, setTimelineData] = useState<TimelineItem[]>([]);
   const [recentPortfolio, setRecentPortfolio] = useState<PortfolioImage[]>([]);
@@ -127,6 +129,21 @@ export default function Dashboard() {
         `SELECT * FROM leads
          WHERE date(next_follow_up) = date('now')`
       );
+
+      // Load Today's Client Follow Ups
+      const todayClientFollowUpsResult: any = await db.getAllAsync(
+        `SELECT clients.*, clients.name as client_name
+         FROM clients
+         WHERE date(next_follow_up) = date('now')`
+      );
+
+      // Load Today's Payments
+      const todayPaymentsResult: any = await db.getAllAsync(
+        `SELECT payments.*, clients.name as client_name
+         FROM payments
+         LEFT JOIN clients ON payments.client_id = clients.id
+         WHERE date(payments.payment_date) = date('now') AND payments.status != 'paid'`
+      );
       
       const revenue = revenueResult[0]?.total || 0;
       const expenses = expensesResult[0]?.total || 0;
@@ -142,6 +159,8 @@ export default function Dashboard() {
         monthlyProfit: revenue - expenses,
         todaysShoots: todayShootsResult || [],
         todaysFollowUps: todayFollowUpsResult || [],
+        todaysClientFollowUps: todayClientFollowUpsResult || [],
+        todaysPayments: todayPaymentsResult || [],
       });
 
       // Load Timeline
@@ -493,10 +512,10 @@ export default function Dashboard() {
             </View>
           </View>
 
-          {/* Schedule Timeline (Shoots & Payments) */}
+          {/* Shoots Timeline (Shoots & Payments) */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 0 }]}>Schedule Timeline</Text>
+              <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 0 }]}>Shoots Timeline</Text>
               <TouchableOpacity onPress={() => router.push('/shoots')}>
                 <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>View All</Text>
               </TouchableOpacity>
@@ -581,8 +600,8 @@ export default function Dashboard() {
 
               <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 12, height: 240 }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
-                  {timelineData.filter(i => i.type !== 'lead').length > 0 ? (
-                    timelineData.filter(i => i.type !== 'lead').map((item, index, arr) => (
+                  {timelineData.filter(i => i.type === 'shoot').length > 0 ? (
+                    timelineData.filter(i => i.type === 'shoot').map((item, index, arr) => (
                       <TimelineRow
                         key={`${item.type}-${item.id}`}
                         item={item}
@@ -590,9 +609,11 @@ export default function Dashboard() {
                       />
                     ))
                   ) : (
-                    <View style={styles.emptyState}>
-                      <Ionicons name="calendar-clear-outline" size={30} color={colors.textTertiary} />
-                      <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12 }]}>No upcoming events</Text>
+                    <View style={{ flex: 1, justifyContent: 'flex-end', alignItems: 'center', padding: 75 }}>
+                      <View style={[styles.emptyState, { backgroundColor: 'transparent' }]}>
+                        <Ionicons name="calendar-clear-outline" size={30} color={colors.textTertiary} />
+                        <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming events</Text>
+                      </View>
                     </View>
                   )}
                 </ScrollView>
@@ -611,7 +632,7 @@ export default function Dashboard() {
 
             <View style={styles.timelineSplitRow}>
               <View
-                style={{ flex: 1, height: 240 }}
+                style={{ flex: 1.25, height: 240 }}
                 onLayout={(e) => setFollowUpCardWidth(e.nativeEvent.layout.width)}
               >
                 {stats.todaysFollowUps.length > 0 ? (
@@ -636,7 +657,7 @@ export default function Dashboard() {
                               backgroundColor: colors.info + '15',
                               borderColor: colors.info + '30',
                               height: 240,
-                              width: followUpCardWidth || todayCardWidth
+                              width: followUpCardWidth || todayCardWidth || 200
                             }
                           ]}
                           onPress={() => router.push('/leads')}
@@ -686,7 +707,7 @@ export default function Dashboard() {
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 12, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 70, height: 240 }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'lead').length > 0 ? (
                     timelineData.filter(i => i.type === 'lead').map((item, index, arr) => (
@@ -697,9 +718,213 @@ export default function Dashboard() {
                       />
                     ))
                   ) : (
-                    <View style={styles.emptyState}>
+                    <View style={styles.emptyStateContainer}>
                       <Ionicons name="call-outline" size={30} color={colors.textTertiary} />
-                      <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12 }]}>No upcoming follow-ups</Text>
+                      <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming follow-ups</Text>
+                    </View>
+                  )}
+                </ScrollView>
+              </View>
+            </View>
+          </View>
+
+          {/* Clients Follow Up Timeline */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 0 }]}>Clients Follow Up Timeline</Text>
+              <TouchableOpacity onPress={() => router.push('/clients')}>
+                <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>View All</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.timelineSplitRow}>
+              <View
+                style={{ flex: 1.25, height: 240 }}
+                onLayout={(e) => setFollowUpCardWidth(e.nativeEvent.layout.width)}
+              >
+                {stats.todaysClientFollowUps.length > 0 ? (
+                  <View style={{ flex: 1 }}>
+                    {/* Fixed Number Display Badge */}
+                    <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.success }]}>
+                      <Text style={styles.shootCountText}>{stats.todaysClientFollowUps.length}</Text>
+                    </View>
+
+                    <ScrollView
+                      horizontal
+                      pagingEnabled
+                      showsHorizontalScrollIndicator={false}
+                      style={{ flex: 1 }}
+                    >
+                      {stats.todaysClientFollowUps.map((client: any) => (
+                        <TouchableOpacity
+                          key={client.id}
+                          style={[
+                            styles.todayShootSplitCard,
+                            {
+                              backgroundColor: colors.success + '15',
+                              borderColor: colors.success + '30',
+                              height: 240,
+                              width: followUpCardWidth || todayCardWidth
+                            }
+                          ]}
+                          onPress={() => router.push('/clients')}
+                        >
+                          <View style={styles.todayShootHeader}>
+                            <LinearGradient
+                              colors={[colors.success, '#16a34a']}
+                              style={styles.todayShootIconSmall}
+                            >
+                              <Ionicons name="call" size={20} color="#fff" />
+                            </LinearGradient>
+                            <Text style={[styles.todayShootLabel, { color: colors.success }]}>TODAY</Text>
+                          </View>
+
+                          <Text style={[styles.todayShootTitle, { color: colors.text }]} numberOfLines={2}>
+                            {client.name}
+                          </Text>
+                          <Text style={[styles.todayShootClient, { color: colors.textSecondary }]} numberOfLines={1}>
+                            {client.event_type || 'Client'}
+                          </Text>
+
+                          <View style={styles.todayShootFooter}>
+                            <View style={styles.todayShootMetaItem}>
+                              <Ionicons name="call-outline" size={12} color={colors.textTertiary} />
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]}>{client.phone}</Text>
+                            </View>
+                            <View style={styles.todayShootMetaItem}>
+                              <Ionicons name="location-outline" size={12} color={colors.textTertiary} />
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]} numberOfLines={1}>{client.event_location || 'No location'}</Text>
+                            </View>
+                          </View>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                    {stats.todaysClientFollowUps.length > 1 && (
+                      <View style={styles.swipeIndicatorContainer}>
+                        <Ionicons name="ellipsis-horizontal" size={16} color={colors.success} />
+                      </View>
+                    )}
+                  </View>
+                ) : (
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240 }]}>
+                     <Ionicons name="checkmark-circle-outline" size={24} color={colors.textTertiary} />
+                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8 }}>All Followed Up</Text>
+                     <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No client follow-ups today</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 70, height: 240 }]}>
+                <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
+                  <View style={styles.emptyStateContainer}>
+                    <Ionicons name="call-outline" size={30} color={colors.textTertiary} />
+                    <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming client follow-ups</Text>
+                  </View>
+                </ScrollView>
+              </View>
+            </View>
+          </View>
+
+          {/* Payments Timeline */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 0 }]}>Payments Timeline</Text>
+              <TouchableOpacity onPress={() => router.push('/payments')}>
+                <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>View All</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.timelineSplitRow}>
+              <View
+                style={{ flex: 1.25, height: 240 }}
+                onLayout={(e) => setFollowUpCardWidth(e.nativeEvent.layout.width)}
+              >
+                {stats.todaysPayments.length > 0 ? (
+                  <View style={{ flex: 1 }}>
+                    {/* Fixed Number Display Badge */}
+                    <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.accent }]}>
+                      <Text style={styles.shootCountText}>{stats.todaysPayments.length}</Text>
+                    </View>
+
+                    <ScrollView
+                      horizontal
+                      pagingEnabled
+                      showsHorizontalScrollIndicator={false}
+                      style={{ flex: 1 }}
+                    >
+                      {stats.todaysPayments.map((payment: any) => (
+                        <TouchableOpacity
+                          key={payment.id}
+                          style={[
+                            styles.todayShootSplitCard,
+                            {
+                              backgroundColor: colors.accent + '15',
+                              borderColor: colors.accent + '30',
+                              height: 240,
+                              width: followUpCardWidth || todayCardWidth || 200
+                            }
+                          ]}
+                          onPress={() => router.push('/payments')}
+                        >
+                          <View style={styles.todayShootHeader}>
+                            <LinearGradient
+                              colors={[colors.accent, '#f59e0b']}
+                              style={styles.todayShootIconSmall}
+                            >
+                              <Ionicons name="card" size={20} color="#fff" />
+                            </LinearGradient>
+                            <Text style={[styles.todayShootLabel, { color: colors.accent }]}>TODAY</Text>
+                          </View>
+
+                          <Text style={[styles.todayShootTitle, { color: colors.text }]} numberOfLines={2}>
+                            Payment Due
+                          </Text>
+                          <Text style={[styles.todayShootClient, { color: colors.textSecondary }]} numberOfLines={1}>
+                            {payment.client_name}
+                          </Text>
+
+                          <View style={styles.todayShootFooter}>
+                            <View style={styles.todayShootMetaItem}>
+                              <Ionicons name="cash-outline" size={12} color={colors.textTertiary} />
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]}>₹{payment.total_amount?.toLocaleString() || 0}</Text>
+                            </View>
+                            <View style={styles.todayShootMetaItem}>
+                              <Ionicons name="calendar-outline" size={12} color={colors.textTertiary} />
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]} numberOfLines={1}>{payment.payment_date}</Text>
+                            </View>
+                          </View>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                    {stats.todaysPayments.length > 1 && (
+                      <View style={styles.swipeIndicatorContainer}>
+                        <Ionicons name="ellipsis-horizontal" size={16} color={colors.accent} />
+                      </View>
+                    )}
+                  </View>
+                ) : (
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240 }]}>
+                     <Ionicons name="cash-outline" size={24} color={colors.textTertiary} />
+                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8 }}>No Payments Due</Text>
+                     <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No payments due today</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 70, height: 240 }]}>
+                <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
+                  {timelineData.filter(i => i.type === 'payment').length > 0 ? (
+                    timelineData.filter(i => i.type === 'payment').map((item, index, arr) => (
+                      <TimelineRow
+                        key={`${item.type}-${item.id}`}
+                        item={item}
+                        isLast={index === arr.length - 1}
+                      />
+                    ))
+                  ) : (
+                    <View style={styles.emptyStateContainer}>
+                      <Ionicons name="cash-outline" size={30} color={colors.textTertiary} />
+                      <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming payments</Text>
                     </View>
                   )}
                 </ScrollView>
@@ -1176,10 +1401,16 @@ const styles = StyleSheet.create({
   portfolioFrameOverlay: {
     ...StyleSheet.absoluteFillObject,
   },
-  emptyState: {
+  emptyStateContainer: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 20,
+    gap: 12,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
     gap: 12,
   },
   emptyStateText: {

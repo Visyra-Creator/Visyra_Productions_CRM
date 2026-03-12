@@ -48,6 +48,7 @@ interface Client {
   lead_source: string;
   notes: string;
   status: string;
+  next_follow_up?: string;
   created_at?: string;
 }
 
@@ -120,6 +121,7 @@ export default function Clients() {
   const [isPackagePickerVisible, setIsPackagePickerVisible] = useState(false);
   const [isSourcePickerVisible, setIsSourcePickerVisible] = useState(false);
   const [showEventDatePicker, setShowEventDatePicker] = useState(false);
+  const [showFollowUpDatePicker, setShowFollowUpDatePicker] = useState(false);
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
   const [selectedClientForDetail, setSelectedClientForDetail] = useState<Client | null>(null);
@@ -149,6 +151,7 @@ export default function Clients() {
     selectedPackages: [] as string[],
     total_price: '',
     lead_source: '',
+    next_follow_up: '',
     notes: '',
     status: 'booked'
   });
@@ -494,6 +497,7 @@ export default function Clients() {
       selectedPackages: client.package_name ? client.package_name.split(', ') : [],
       total_price: client.total_price?.toString() || '0',
       lead_source: client.lead_source || '',
+      next_follow_up: client.next_follow_up || '',
       notes: client.notes || '',
       status: client.status || 'booked'
     });
@@ -620,6 +624,7 @@ export default function Clients() {
       selectedPackages: [],
       total_price: '',
       lead_source: '',
+      next_follow_up: '',
       notes: '',
       status: 'booked'
     });
@@ -780,6 +785,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
       <Text style={[styles.columnHeader, styles.colLocation, { color: colors.textSecondary }]}>LOCATION</Text>
       <Text style={[styles.columnHeader, styles.colEvent, { color: colors.textSecondary }]}>EVENT TYPE</Text>
       <Text style={[styles.columnHeader, styles.colEventDate, { color: colors.textSecondary }]}>EVENT DATE</Text>
+      <Text style={[styles.columnHeader, styles.colFollowUp, { color: colors.textSecondary }]}>FOLLOW UP</Text>
       <Text style={[styles.columnHeader, styles.colPackage, { color: colors.textSecondary }]}>PACKAGES</Text>
       <Text style={[styles.columnHeader, styles.colPrice, { color: colors.textSecondary }]}>TOTAL</Text>
       <Text style={[styles.columnHeader, styles.colSource, { color: colors.textSecondary }]}>SOURCE</Text>
@@ -792,7 +798,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     <View key={client.id} style={[styles.tableRow, { borderBottomColor: colors.border }]}>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700', fontSize: 13 }]} numberOfLines={1}>{client.client_id || `C${(index + 1).toString().padStart(4, '0')}`}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
-        <TouchableOpacity onPress={() => handleConvertToPayment(client)} style={styles.actionBtn} title="Convert to Payment">
+        <TouchableOpacity onPress={() => handleConvertToPayment(client)} style={styles.actionBtn}>
           <Ionicons name="card-outline" size={18} color={colors.success} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => { setSelectedClientForDetail(client); setIsDetailModalVisible(true); }} style={styles.actionBtn}>
@@ -812,6 +818,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
       <Text style={[styles.colLocation, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_location || '-'}</Text>
       <Text style={[styles.colEvent, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_type || '-'}</Text>
       <Text style={[styles.colEventDate, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_date ? format(parseISO(client.event_date), 'dd-MMM-yy') : '-'}</Text>
+      <Text style={[styles.colFollowUp, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.next_follow_up ? format(parseISO(client.next_follow_up), 'dd-MMM-yy') : '-'}</Text>
       <Text style={[styles.colPackage, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.package_name || '-'}</Text>
       <Text style={[styles.colPrice, { color: colors.textSecondary, fontSize: 13, fontWeight: '600' }]} numberOfLines={1}>₹{(client.total_price || 0).toLocaleString()}</Text>
       <Text style={[styles.colSource, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.lead_source || '-'}</Text>
@@ -877,7 +884,6 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           <TouchableOpacity
             style={[styles.iconButton, { backgroundColor: colors.surface }]}
             onPress={resetSummarySelection}
-            title="Reset filters"
           >
             <Ionicons name="refresh-outline" size={20} color={colors.error} />
           </TouchableOpacity>
@@ -1165,6 +1171,32 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                     </Text>
                     <Ionicons name="chevron-down" size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Next Follow Up</Text>
+                  <TouchableOpacity
+                    style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                    onPress={() => setShowFollowUpDatePicker(true)}
+                  >
+                    <Text style={{ color: formData.next_follow_up ? colors.text : colors.textTertiary }}>
+                      {formData.next_follow_up ? format(parseISO(formData.next_follow_up), 'dd-MMM-yy') : 'Select follow-up date'}
+                    </Text>
+                    <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                  {showFollowUpDatePicker && (
+                    <DateTimePicker
+                      value={formData.next_follow_up ? parseISO(formData.next_follow_up) : new Date()}
+                      mode="date"
+                      display="default"
+                      onChange={(event, selectedDate) => {
+                        if (selectedDate) {
+                          setFormData({ ...formData, next_follow_up: format(selectedDate, 'yyyy-MM-dd') });
+                        }
+                        setShowFollowUpDatePicker(false);
+                      }}
+                    />
+                  )}
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -1488,9 +1520,9 @@ const styles = StyleSheet.create({
   addBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
 
   tableContainer: { flex: 1, borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden' },
-  tableHeader: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 18, borderBottomWidth: 2, gap: 16, alignItems: 'center' },
+  tableHeader: { flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 20, borderBottomWidth: 2, gap: 20, alignItems: 'center' },
   columnHeader: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center', textTransform: 'uppercase' },
-  tableRow: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, alignItems: 'center', gap: 16 },
+  tableRow: { flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, alignItems: 'center', gap: 20 },
 
   colId: { width: 65, textAlign: 'center' },
   colActions: { width: 160, alignItems: 'center', justifyContent: 'center', marginHorizontal: 8 },
@@ -1501,6 +1533,7 @@ const styles = StyleSheet.create({
   colLocation: { width: 120, textAlign: 'center' },
   colEvent: { width: 110, textAlign: 'center' },
   colEventDate: { width: 110, textAlign: 'center' },
+  colFollowUp: { width: 110, textAlign: 'center' },
   colPackage: { width: 130, textAlign: 'center' },
   colPrice: { width: 100, textAlign: 'center' },
   colSource: { width: 110, textAlign: 'center' },
