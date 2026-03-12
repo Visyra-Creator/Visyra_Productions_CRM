@@ -36,6 +36,10 @@ interface Lead {
   email: string;
   source: string;
   event_type?: string;
+  event_location?: string;
+  package_name?: string;
+  total_price?: number;
+  status?: string;
   budget?: number;
   stage: string;
   notes: string;
@@ -333,8 +337,7 @@ export default function Leads() {
                  VALUES (?, ?, ?, ?, ?, ?, 'active')`,
                 [lead.name, lead.phone, lead.email, lead.source, lead.event_type, lead.notes]
               );
-              // Remove from leads table
-              await db.runAsync('DELETE FROM leads WHERE id = ?', [lead.id]);
+              // Keep a copy in leads table (do not delete)
             }
 
             Alert.alert('Success', `${selectedIds.size} leads converted to clients successfully`);
@@ -394,6 +397,11 @@ export default function Leads() {
       phone: '',
       email: '',
       source: '',
+      event_type: '',
+      event_location: '',
+      package_name: '',
+      total_price: '',
+      status: 'new',
       stage: 'new',
       event_date: format(new Date(), 'yyyy-MM-dd'),
       next_follow_up: '',
@@ -412,6 +420,9 @@ export default function Leads() {
 
     if (!rawPhone) { Alert.alert('Warning', 'Phone number is mandatory'); return; }
     if (rawPhone.length !== 10) { Alert.alert('Warning', 'Phone number must be 10 digits'); return; }
+
+    if (!formData.source) { Alert.alert('Warning', 'Lead Source is mandatory'); return; }
+    if (!formData.stage) { Alert.alert('Warning', 'Lead Stage is mandatory'); return; }
 
     const normalizedPhone = `+91${rawPhone}`;
     if (!gmailResult.valid) { Alert.alert('Warning', gmailResult.message); return; }
@@ -459,6 +470,11 @@ export default function Leads() {
       phone: editablePhone,
       email: lead.email || '',
       source: lead.source || '',
+      event_type: lead.event_type || '',
+      event_location: lead.event_location || '',
+      package_name: lead.package_name || '',
+      total_price: lead.total_price?.toString() || '',
+      status: lead.status || 'new',
       stage: lead.stage || 'new',
       event_date: lead.event_date || format(new Date(), 'yyyy-MM-dd'),
       next_follow_up: lead.next_follow_up || '',
