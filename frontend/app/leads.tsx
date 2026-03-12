@@ -20,7 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
 import { LinearGradient } from 'expo-linear-gradient';
-import { format, parseISO, isToday, isThisWeek, isThisMonth, isSameDay, isSameWeek, isSameMonth, startOfWeek, endOfWeek, startOfMonth, endOfMonth, setMonth, setYear, setDate } from 'date-fns';
+import { format, parseISO, isToday, isThisWeek, isThisMonth, isSameDay, isSameWeek, isSameMonth, startOfWeek, endOfWeek, startOfMonth, endOfMonth, setMonth, setYear, setDate, addWeeks, differenceInCalendarWeeks } from 'date-fns';
 import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
@@ -35,11 +35,23 @@ interface Lead {
   phone: string;
   email: string;
   source: string;
+  event_type?: string;
+  budget?: number;
+  stage: string;
   notes: string;
   event_date: string;
   next_follow_up?: string;
   created_at?: string;
 }
+
+const LEAD_STAGES = [
+  { label: 'New', value: 'new', color: '#3b82f6' },
+  { label: 'Contacted', value: 'contacted', color: '#8b5cf6' },
+  { label: 'Qualified', value: 'qualified', color: '#10b981' },
+  { label: 'Proposal Sent', value: 'proposal', color: '#f59e0b' },
+  { label: 'Won', value: 'won', color: '#10b981' },
+  { label: 'Lost', value: 'lost', color: '#ef4444' }
+];
 
 interface AppOption {
   id: number;
@@ -50,8 +62,21 @@ interface AppOption {
 type SortKey = 'date_desc' | 'date_asc' | 'name_asc' | 'name_desc' | 'id_desc' | 'id_asc';
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const YEARS = Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 2 + i);
-const WEEKS = [1, 2, 3, 4, 5];
+
+const getWeeksInMonthCount = (month: number, year: number) => {
+  const firstDayOfMonth = new Date(year, month, 1);
+  const lastDayOfMonth = new Date(year, month + 1, 0);
+  
+  // Find the first Monday (weekStartsOn: 1) of the month (or leading into it)
+  const firstWeekStart = startOfWeek(firstDayOfMonth, { weekStartsOn: 1 });
+  // Find the end of the last week of the month
+  const lastWeekEnd = endOfWeek(lastDayOfMonth, { weekStartsOn: 1 });
+  
+  // Calculate total days between the start of the first week and the end of the last week
+  const diffInDays = Math.ceil((lastWeekEnd.getTime() - firstWeekStart.getTime()) / (1000 * 60 * 60 * 24));
+  // Return the number of weeks (should be 4, 5, or 6)
+  return Math.ceil(diffInDays / 7);
+};
 
 export default function Leads() {
   const { width } = useWindowDimensions();
@@ -62,7 +87,12 @@ export default function Leads() {
   // Data State
   const [leads, setLeads] = useState<Lead[]>([]);
   const [leadSources, setLeadSources] = useState<AppOption[]>([]);
-  const [stats, setStats] = useState({ today: 0, week: 0, month: 0 });
+  const [eventTypes, setEventTypes] = useState<AppOption[]>([]);
+  const [stats, setStats] = useState({
+    today: 0, 
+    week: 0, 
+    month: 0 
+  });
   const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -72,7 +102,12 @@ export default function Leads() {
   const [editingLeadId, setEditingLeadId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isSourcePickerVisible, setIsSourcePickerVisible] = useState(false);
+  const [isEventTypePickerVisible, setIsEventTypePickerVisible] = useState(false);
+  const [isStagePickerVisible, setIsStagePickerVisible] = useState(false);
+  const [showEventDatePicker, setShowEventDatePicker] = useState(false);
   const [showFollowUpPicker, setShowFollowUpPicker] = useState(false);
+  const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
+  const [selectedLeadForDetail, setSelectedLeadForDetail] = useState<Lead | null>(null);
 
   // Summary Filter State
   const [summaryDates, setSummaryDates] = useState({
@@ -85,8 +120,19 @@ export default function Leads() {
 
   // Custom Picker States
   const [tempMonth, setTempMonth] = useState(new Date().getMonth());
+  // year is not selectable by the user; keep it so calculations still have a
+  // value (defaults to current year or previously applied year).
   const [tempYear, setTempYear] = useState(new Date().getFullYear());
   const [tempWeek, setTempWeek] = useState(1);
+
+  // keep track of the month/year that were used when a "week" filter was applied
+  // (summaryDates.week may point to a date in the previous month if the first
+  // week of the month starts in the prior month). Storing the month/year lets
+  // us reopen the picker showing the same year even though it's not exposed.
+  const [selectedWeekMonthYear, setSelectedWeekMonthYear] = useState<{month:number;year:number}>({
+    month: new Date().getMonth(),
+    year: new Date().getFullYear()
+  });
 
   // Sort & Filter State
   const [sortBy, setSortBy] = useState<SortKey>('id_desc');
@@ -98,6 +144,7 @@ export default function Leads() {
     startDate: '',
     endDate: '',
     source: 'all',
+    stage: 'all',
     followUpStart: '',
     followUpEnd: '',
     nameStarts: ''
@@ -111,6 +158,7 @@ export default function Leads() {
     phone: '',
     email: '',
     source: '',
+    stage: 'new',
     event_date: format(new Date(), 'yyyy-MM-dd'),
     next_follow_up: '',
     notes: ''
@@ -133,23 +181,32 @@ export default function Leads() {
       const sources = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_source' ORDER BY label ASC");
       setLeadSources(sources as AppOption[]);
 
+      const types = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'event_type' ORDER BY label ASC");
+      setEventTypes(types as AppOption[]);
+
       let todayCount = 0;
       let weekCount = 0;
       let monthCount = 0;
 
       allLeads.forEach(lead => {
-        const dateStr = lead.next_follow_up;
-        if (dateStr) {
+        const createdAtStr = lead.created_at;
+
+        // Today, Week & Month: Total Leads created on that day/week/month
+        if (createdAtStr) {
           try {
-            const date = parseISO(dateStr);
-            if (isSameDay(date, summaryDates.today)) todayCount++;
-            if (isSameWeek(date, summaryDates.week, { weekStartsOn: 1 })) weekCount++;
-            if (isSameMonth(date, summaryDates.month)) monthCount++;
+            const createdAt = parseISO(createdAtStr.replace(' ', 'T') + 'Z'); 
+            if (isSameDay(createdAt, summaryDates.today)) todayCount++;
+            if (isSameWeek(createdAt, summaryDates.week, { weekStartsOn: 1 })) weekCount++;
+            if (isSameMonth(createdAt, summaryDates.month)) monthCount++;
           } catch (e) {}
         }
       });
 
-      setStats({ today: todayCount, week: weekCount, month: monthCount });
+      setStats({ 
+        today: todayCount, 
+        week: weekCount, 
+        month: monthCount 
+      });
 
     } catch (error) {
       console.error('Error loading leads:', error);
@@ -168,15 +225,33 @@ export default function Leads() {
     // Summary Card Filters (Take precedence)
     if (activeSummaryType === 'today') {
       result = result.filter(l => {
-        try { return l.next_follow_up && isSameDay(parseISO(l.next_follow_up), summaryDates.today); } catch { return false; }
+        try { 
+          if (!l.created_at) return false;
+          const createdAt = parseISO(l.created_at.replace(' ', 'T') + 'Z');
+          return isSameDay(createdAt, summaryDates.today); 
+        } catch { return false; }
       });
     } else if (activeSummaryType === 'week') {
       result = result.filter(l => {
-        try { return l.next_follow_up && isSameWeek(parseISO(l.next_follow_up), summaryDates.week, { weekStartsOn: 1 }); } catch { return false; }
+        try {
+          if (!l.created_at) return false;
+          const creationDate = parseISO(l.created_at.replace(' ', 'T') + 'Z');
+          // require both that the date falls in the chosen calendar week and
+          // that it belongs to the selected month – this prevents, for example,
+          // February 27 being included when the user asked for "March week 1".
+          return (
+            isSameWeek(creationDate, summaryDates.week, { weekStartsOn: 1 }) &&
+            isSameMonth(creationDate, summaryDates.month)
+          );
+        } catch { return false; }
       });
     } else if (activeSummaryType === 'month') {
       result = result.filter(l => {
-        try { return l.next_follow_up && isSameMonth(parseISO(l.next_follow_up), summaryDates.month); } catch { return false; }
+        try {
+          if (!l.created_at) return false;
+          const creationDate = parseISO(l.created_at.replace(' ', 'T') + 'Z');
+          return isSameMonth(creationDate, summaryDates.month);
+        } catch { return false; }
       });
     }
 
@@ -200,6 +275,10 @@ export default function Leads() {
 
     if (filters.source !== 'all') {
       result = result.filter(l => l.source === filters.source);
+    }
+
+    if (filters.stage !== 'all') {
+      result = result.filter(l => l.stage === filters.stage);
     }
 
     if (filters.followUpStart) {
@@ -250,9 +329,9 @@ export default function Leads() {
             for (const lead of selectedLeads) {
               // Add to clients table
               await db.runAsync(
-                `INSERT INTO clients (name, phone, email, lead_source, notes, status) 
-                 VALUES (?, ?, ?, ?, ?, 'active')`,
-                [lead.name, lead.phone, lead.email, lead.source, lead.notes]
+                `INSERT INTO clients (name, phone, email, lead_source, event_type, notes, status)
+                 VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+                [lead.name, lead.phone, lead.email, lead.source, lead.event_type, lead.notes]
               );
               // Remove from leads table
               await db.runAsync('DELETE FROM leads WHERE id = ?', [lead.id]);
@@ -315,6 +394,7 @@ export default function Leads() {
       phone: '',
       email: '',
       source: '',
+      stage: 'new',
       event_date: format(new Date(), 'yyyy-MM-dd'),
       next_follow_up: '',
       notes: ''
@@ -349,22 +429,26 @@ export default function Leads() {
         }
       }
 
+  
       if (editingLeadId) {
         await db.runAsync(
-          'UPDATE leads SET name=?, company_name=?, phone=?, email=?, source=?, event_date=?, next_follow_up=?, notes=? WHERE id=?',
-          [finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.event_date, formData.next_follow_up || null, formData.notes, editingLeadId]
+          'UPDATE leads SET name=?, company_name=?, phone=?, email=?, source=?, stage=?, event_date=?, next_follow_up=?, notes=? WHERE id=?',
+          [finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes, editingLeadId]
         );
       } else {
         await db.runAsync(
-          'INSERT INTO leads (name, company_name, phone, email, source, event_date, next_follow_up, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.event_date, formData.next_follow_up || null, formData.notes]
+          'INSERT INTO leads (name, company_name, phone, email, source, stage, event_date, next_follow_up, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes]
         );
       }
       setModalVisible(false);
       setEditingLeadId(null);
       loadData();
       Alert.alert('Success', `Lead ${editingLeadId ? 'updated' : 'added'} successfully`);
-    } catch (error) { Alert.alert('Error', 'Failed to save lead'); }
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Failed to save lead');
+    }
   };
 
   const handleEdit = (lead: Lead) => {
@@ -375,6 +459,7 @@ export default function Leads() {
       phone: editablePhone,
       email: lead.email || '',
       source: lead.source || '',
+      stage: lead.stage || 'new',
       event_date: lead.event_date || format(new Date(), 'yyyy-MM-dd'),
       next_follow_up: lead.next_follow_up || '',
       notes: lead.notes || ''
@@ -410,8 +495,8 @@ export default function Leads() {
         const name = row.Name || row.name || '';
         const rawPhone = String(row.Phone || row.phone || '').replace(/\D/g, '').trim();
         if (!name || rawPhone.length !== 10) continue;
-        await db.runAsync('INSERT INTO leads (name, company_name, phone, email, source, event_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [name, row.Company || null, `+91${rawPhone}`, row.Email || null, row.Source || 'Excel', row.Date || format(new Date(), 'yyyy-MM-dd'), row.Notes || '']);
+        await db.runAsync('INSERT INTO leads (name, company_name, phone, email, source, event_type, budget, stage, event_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [name, row.Company || null, `+91${rawPhone}`, row.Email || null, row.Source || 'Excel', row.Type || null, row.Budget || 0, 'new', row.Date || format(new Date(), 'yyyy-MM-dd'), row.Notes || '']);
         count++;
       }
       loadData();
@@ -419,116 +504,155 @@ export default function Leads() {
     } catch (e) { Alert.alert('Error', 'Import failed'); }
   };
 
-  const clearFilters = () => {
-    setFilters({ startDate: '', endDate: '', source: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+  const resetSummarySelection = () => {
     setActiveSummaryType(null);
+    setSummaryDates({
+      today: new Date(),
+      week: new Date(),
+      month: new Date()
+    });
+    setSelectedWeekMonthYear({ month: new Date().getMonth(), year: new Date().getFullYear() });
+  };
+
+  const clearFilters = () => {
+    setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+    resetSummarySelection();
   };
 
   const isAnyFilterActive = useMemo(() => {
-    return filters.startDate !== '' || filters.endDate !== '' || filters.source !== 'all' || filters.followUpStart !== '' || filters.followUpEnd !== '' || filters.nameStarts !== '' || activeSummaryType !== null;
+    return filters.startDate !== '' || filters.endDate !== '' || filters.source !== 'all' || filters.stage !== 'all' || filters.followUpStart !== '' || filters.followUpEnd !== '' || filters.nameStarts !== '' || activeSummaryType !== null;
   }, [filters, activeSummaryType]);
 
   const onDatePickerChange = (event: any, date?: Date) => {
     const picker = activePicker;
-    setActivePicker(null);
-    if (date) {
-      const formattedDate = format(date, 'yyyy-MM-dd');
-      setFilters(prev => ({ ...prev, [picker!]: formattedDate }));
+    if (Platform.OS === 'android') {
+      setActivePicker(null);
+      if (event.type === 'set' && date) {
+        const formattedDate = format(date, 'yyyy-MM-dd');
+        setFilters(prev => ({ ...prev, [picker!]: formattedDate }));
+      }
+    } else {
+      if (date) {
+        const formattedDate = format(date, 'yyyy-MM-dd');
+        setFilters(prev => ({ ...prev, [picker!]: formattedDate }));
+      }
+      if (event.type === 'dismissed' || event.type === 'set') {
+        setActivePicker(null);
+      }
     }
   };
 
   const onSummaryDatePickerChange = (event: any, date?: Date) => {
-    const type = showSummaryPicker;
-    setShowSummaryPicker(null);
-    if (date && type) {
-      setSummaryDates(prev => ({ ...prev, [type]: date }));
-      setActiveSummaryType(type);
+    if (Platform.OS === 'android') {
+      if (event.type === 'dismissed') {
+        return;
+      }
+    }
+    if (date) {
+      setSummaryDates(prev => ({ ...prev, today: date }));
+      
+      if (Platform.OS === 'android' && event.type === 'set') {
+        // Auto-apply the filter when a date is selected for "Today" card
+        setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+        setActiveSummaryType(null); // Force a reset
+        setTimeout(() => {
+          setActiveSummaryType('today');
+          setShowSummaryPicker(null);
+        }, 10);
+      } else if (Platform.OS === 'ios') {
+        setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+        setActiveSummaryType(null);
+        setTimeout(() => {
+          setActiveSummaryType('today');
+          setShowSummaryPicker(null);
+        }, 10);
+      }
     }
   };
 
   const handleApplyMonthYear = () => {
-    const newDate = setYear(setMonth(new Date(), tempMonth), tempYear);
+    const newDate = new Date(tempYear, tempMonth, 1);
     setSummaryDates(prev => ({ ...prev, month: newDate }));
-    setActiveSummaryType('month');
-    setShowSummaryPicker(null);
+    // Clear other filters to show only the selected summary filter
+    setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+    setActiveSummaryType(null); // Force a reset
+    setTimeout(() => {
+      setActiveSummaryType('month');
+      setShowSummaryPicker(null);
+    }, 10);
   };
 
   const handleApplyMonthWeek = () => {
-    // Set to roughly the middle of the selected week in the selected month
-    const newDate = setDate(setMonth(new Date(), tempMonth), (tempWeek - 1) * 7 + 4);
-    setSummaryDates(prev => ({ ...prev, week: newDate }));
-    setActiveSummaryType('week');
-    setShowSummaryPicker(null);
+    // remember the month/year the user picked so the config dialog can
+    // re‑populate correctly later
+    setSelectedWeekMonthYear({ month: tempMonth, year: tempYear });
+
+    // calculate a date representing the start of the chosen week within the
+    // selected month.  We always start from the first week that contains
+    // any day of the month (the same logic as before) but the resulting date
+    // will now be used only for filtering – the month/year are tracked
+    // separately above.
+    const monthStart = startOfWeek(new Date(tempYear, tempMonth, 1), { weekStartsOn: 1 });
+    const targetWeekDate = addWeeks(monthStart, tempWeek - 1);
+
+    setSummaryDates(prev => ({
+      ...prev,
+      week: targetWeekDate,
+      // also record the selected month so filtering can exclude days from
+      // adjacent months that happen to fall in the same calendar week
+      month: new Date(tempYear, tempMonth, 1)
+    }));
+
+    // Clear other filters to show only the selected summary filter
+    setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+    setActiveSummaryType(null); // Force a reset
+    setTimeout(() => {
+      setActiveSummaryType('week');
+      setShowSummaryPicker(null);
+    }, 10);
   };
 
   const getSummaryTitle = (type: 'today' | 'week' | 'month', defaultTitle: string) => {
     const date = summaryDates[type];
     if (type === 'today') {
-      return isToday(date) ? 'Today' : format(date, 'MMM dd');
+      return isToday(date) ? 'Total Leads (Today)' : `Leads (${format(date, 'MMM dd')})`;
     } else if (type === 'week') {
-      const start = startOfWeek(date, { weekStartsOn: 1 });
-      const end = endOfWeek(date, { weekStartsOn: 1 });
-      return isThisWeek(date, { weekStartsOn: 1 }) ? 'This Week' : `${format(start, 'MMM dd')} - ${format(end, 'dd')}`;
+      // For week filters we want the display range to respect the month/year the
+      // user chose, even if the actual weekStart falls in the previous month.
+      const monthStart = startOfWeek(new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1), { weekStartsOn: 1 });
+      let start = startOfWeek(date, { weekStartsOn: 1 });
+      if (start < monthStart) {
+        // clip the start to the beginning of the selected month
+        start = new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1);
+      }
+      const end = endOfWeek(start, { weekStartsOn: 1 });
+      const isCurrentWeek = isSameWeek(start, new Date(), { weekStartsOn: 1 });
+      return isCurrentWeek ? 'Total Leads (Week)' : `${format(start, 'MMM dd')} - ${format(end, 'dd')}`;
     } else {
-      return isThisMonth(date) ? 'This Month' : format(date, 'MMM yyyy');
+      return isThisMonth(date) ? 'Total Leads (Month)' : `Leads (${format(date, 'MMM yyyy')})`;
     }
   };
 
   const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     const isActive = activeSummaryType === type;
-    const displayTitle = getSummaryTitle(type, title);
+      const displayTitle = getSummaryTitle(type, title);
 
-    const handleCompleteAction = async () => {
-      if (count === 0) {
-        Alert.alert('Info', `No leads to complete for ${displayTitle}`);
-        return;
-      }
-
-      Alert.alert(
-        'Complete Action',
-        `Do you want to mark all ${count} leads in ${displayTitle} as followed up?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Yes, Complete',
-            onPress: async () => {
-              try {
-                const db = getDatabase();
-                if (!db) return;
-
-                const leadsToUpdate = leads.filter(l => {
-                  if (!l.next_follow_up) return false;
-                  const date = parseISO(l.next_follow_up);
-                  if (type === 'today') return isSameDay(date, summaryDates.today);
-                  if (type === 'week') return isSameWeek(date, summaryDates.week, { weekStartsOn: 1 });
-                  if (type === 'month') return isSameMonth(date, summaryDates.month);
-                  return false;
-                });
-
-                for (const lead of leadsToUpdate) {
-                  await db.runAsync('UPDATE leads SET next_follow_up = NULL WHERE id = ?', [lead.id]);
-                }
-
-                Alert.alert('Success', `Completed ${leadsToUpdate.length} leads`);
-                loadData();
-              } catch (error) {
-                console.error('Failed to complete action:', error);
-                Alert.alert('Error', 'Failed to complete leads');
-              }
-            }
-          }
-        ]
-      );
-    };
-
-    const handleConfigPress = () => {
+    const handleConfigPress = (e?: any) => {
+      if (e && e.stopPropagation) e.stopPropagation();
       if (type === 'month') {
         setTempMonth(summaryDates.month.getMonth());
+        // retain the year we used previously so applying again doesn't jump to
+        // the current year unexpectedly
         setTempYear(summaryDates.month.getFullYear());
       } else if (type === 'week') {
-        setTempMonth(summaryDates.week.getMonth());
-        // Estimate week of month
-        setTempWeek(Math.floor((summaryDates.week.getDate() - 1) / 7) + 1);
+        setTempMonth(selectedWeekMonthYear.month);
+        setTempYear(selectedWeekMonthYear.year);
+
+        // compute the week index relative to the first week of the selected
+        // month/year. differenceInCalendarWeeks handles all edge cases for us.
+        const monthStart = startOfWeek(new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1), { weekStartsOn: 1 });
+        const idx = differenceInCalendarWeeks(summaryDates.week, monthStart, { weekStartsOn: 1 }) + 1;
+        setTempWeek(idx > 0 ? idx : 1);
       }
       setShowSummaryPicker(type);
     };
@@ -547,23 +671,26 @@ export default function Leads() {
         <TouchableOpacity
           style={styles.summaryContent}
           activeOpacity={0.8}
-          onPress={() => setActiveSummaryType(activeSummaryType === type ? null : type)}
+          onPress={() => {
+            const newType = activeSummaryType === type ? null : type;
+            setActiveSummaryType(newType);
+            if (newType !== null) {
+              setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+            }
+          }}
         >
           <View style={{ flex: 1 }}>
-            <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count}</Text>
-            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>{displayTitle}</Text>
+            <View>
+              <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count ?? 0}</Text>
+              <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>
+                {displayTitle}
+              </Text>
+            </View>
           </View>
           
           <View style={styles.summaryCardActions}>
             <TouchableOpacity
-              onPress={handleCompleteAction}
-              style={[styles.summaryActionIcon, { width: isTablet ? 40 : 32, height: isTablet ? 40 : 32 }]}
-            >
-              <Ionicons name="checkmark-done-circle-outline" size={isTablet ? 28 : 22} color="#fff" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={handleConfigPress}
+              onPress={(e) => handleConfigPress(e)}
               style={[styles.summaryActionIcon, { width: isTablet ? 40 : 32, height: isTablet ? 40 : 32 }]}
             >
               <Ionicons name={icon} size={isTablet ? 24 : 20} color="#fff" />
@@ -587,8 +714,9 @@ export default function Leads() {
       <Text style={[styles.columnHeader, styles.colName, { color: colors.textSecondary }]}>NAME</Text>
       <Text style={[styles.columnHeader, styles.colCompany, { color: colors.textSecondary }]}>COMPANY</Text>
       <Text style={[styles.columnHeader, styles.colPhone, { color: colors.textSecondary }]}>PHONE</Text>
-      <Text style={[styles.columnHeader, styles.colEmail, { color: colors.textSecondary }]}>GMAIL</Text>
+      <Text style={[styles.columnHeader, styles.colEmail, { color: colors.textSecondary }]}>EMAIL</Text>
       <Text style={[styles.columnHeader, styles.colSource, { color: colors.textSecondary }]}>SOURCE</Text>
+      <Text style={[styles.columnHeader, styles.colStage, { color: colors.textSecondary }]}>STAGE</Text>
       <Text style={[styles.columnHeader, styles.colDate, { color: colors.textSecondary }]}>FOLLOW UP</Text>
       <Text style={[styles.columnHeader, styles.colNotes, { color: colors.textSecondary }]}>NOTES</Text>
     </View>
@@ -601,6 +729,7 @@ export default function Leads() {
       </TouchableOpacity>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700' }]}>{lead.lead_id || '-'}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
+        <TouchableOpacity onPress={() => { setSelectedLeadForDetail(lead); setIsDetailModalVisible(true); }} style={styles.actionBtn}><Ionicons name="eye-outline" size={20} color={colors.info} /></TouchableOpacity>
         <TouchableOpacity onPress={() => handleEdit(lead)} style={styles.actionBtn}><Ionicons name="create-outline" size={20} color={colors.primary} /></TouchableOpacity>
         <TouchableOpacity onPress={() => handleDelete(lead.id)} style={styles.actionBtn}><Ionicons name="trash-outline" size={20} color={colors.error} /></TouchableOpacity>
       </View>
@@ -610,6 +739,13 @@ export default function Leads() {
       <Text style={[styles.colPhone, { color: colors.textSecondary }]}>{lead.phone.startsWith('+91') ? `+91 ${lead.phone.slice(3)}` : lead.phone}</Text>
       <Text style={[styles.colEmail, { color: colors.textSecondary }]} numberOfLines={1}>{lead.email || '-'}</Text>
       <Text style={[styles.colSource, { color: colors.textSecondary }]}>{lead.source || '-'}</Text>
+      <View style={styles.colStage}>
+        <View style={[styles.stageBadge, { backgroundColor: LEAD_STAGES.find(s => s.value === lead.stage)?.color + '20' || colors.primary + '20' }]}>
+          <Text style={[styles.stageText, { color: LEAD_STAGES.find(s => s.value === lead.stage)?.color || colors.primary }]}>
+            {LEAD_STAGES.find(s => s.value === lead.stage)?.label || lead.stage || 'New'}
+          </Text>
+        </View>
+      </View>
       <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.next_follow_up || '-'}</Text>
       <Text style={[styles.colNotes, { color: colors.textSecondary }]} numberOfLines={1}>{lead.notes || '-'}</Text>
     </View>
@@ -622,12 +758,50 @@ export default function Leads() {
     </TouchableOpacity>
   );
 
+  const DetailRow = ({ label, value, icon }: { label: string, value: string | undefined, icon: any }) => (
+    <View style={styles.detailRow}>
+      <View style={[styles.detailIconContainer, { backgroundColor: colors.primary + '15' }]}>
+        <Ionicons name={icon} size={20} color={colors.primary} />
+      </View>
+      <View style={styles.detailTextContainer}>
+        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>{label}</Text>
+        <Text style={[styles.detailValue, { color: colors.text }]}>{value || '-'}</Text>
+      </View>
+    </View>
+  );
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.summaryContainer}>
-        <SummaryCard type="today" title="Follow Up Today" count={stats.today} icon="today-outline" gradient={['#3b82f6', '#2563eb']} />
-        <SummaryCard type="week" title="Weekly Follow Up" count={stats.week} icon="calendar-outline" gradient={['#8b5cf6', '#7c3aed']} />
-        <SummaryCard type="month" title="Monthly Follow Up" count={stats.month} icon="pie-chart-outline" gradient={['#ec4899', '#db2777']} />
+        <View style={styles.summaryCardsRow}>
+          <SummaryCard type="today" title="Total Leads (Today)" count={stats.today} icon="people" gradient={['#3b82f6', '#2563eb']} />
+          <SummaryCard 
+            type="week" 
+            title="Total Leads (Week)" 
+            count={stats.week} 
+            icon="calendar" 
+            gradient={['#8b5cf6', '#7c3aed']} 
+          />
+          <SummaryCard 
+            type="month" 
+            title="Total Leads (Month)" 
+            count={stats.month} 
+            icon="calendar-outline" 
+            gradient={['#ec4899', '#db2777']} 
+          />
+        </View>
+        {activeSummaryType && (
+          <TouchableOpacity 
+            style={[styles.clearSummaryBtn, { backgroundColor: colors.error + '15', borderColor: colors.error + '30' }]} 
+            onPress={resetSummarySelection}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.clearSummaryBadge, { backgroundColor: colors.error }]}>
+              <Ionicons name="close" size={14} color="#fff" />
+            </View>
+            <Text style={[styles.clearSummaryText, { color: colors.error }]}>Reset Filter</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <View style={styles.filterBar}>
@@ -641,7 +815,7 @@ export default function Leads() {
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsFilterModalVisible(true)}><Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? colors.primary : colors.textSecondary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsSortModalVisible(true)}><Ionicons name="swap-vertical" size={20} color={colors.primary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={handleImportExcel}><Ionicons name="document-text-outline" size={20} color={colors.info} /></TouchableOpacity>
-          <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]} onPress={() => { setEditingLeadId(null); setFormData({ name: '', company_name: '', phone: '', email: '', source: '', event_date: format(new Date(), 'yyyy-MM-dd'), next_follow_up: '', notes: '' }); setModalVisible(true); }}><Ionicons name="add" size={24} color="#fff" /><Text style={styles.addBtnText}>Add Lead</Text></TouchableOpacity>
+          <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]} onPress={() => { setEditingLeadId(null); setFormData({ name: '', company_name: '', phone: '', email: '', source: '', stage: 'new', event_date: format(new Date(), 'yyyy-MM-dd'), next_follow_up: '', notes: '' }); setModalVisible(true); }}><Ionicons name="add" size={24} color="#fff" /><Text style={styles.addBtnText}>Add Lead</Text></TouchableOpacity>
         </View>
       </View>
 
@@ -662,13 +836,74 @@ export default function Leads() {
             <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
               <View style={styles.modalHeader}><Text style={[styles.modalTitle, { color: colors.text }]}>{editingLeadId ? 'Edit Lead' : 'Add New Lead'}</Text><TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={28} color={colors.textSecondary} /></TouchableOpacity></View>
               <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}>
-                <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Date</Text><TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.textSecondary }]} value={formData.event_date} editable={false} /></View>
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date</Text>
+                  <TouchableOpacity
+                    style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                    onPress={() => { Keyboard.dismiss(); setShowEventDatePicker(true); }}
+                  >
+                    <Text style={{ color: colors.text }}>{formData.event_date}</Text>
+                    <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                  {showEventDatePicker && (
+                    <DateTimePicker
+                      value={parseISO(formData.event_date)}
+                      mode="date"
+                      display="default"
+                      onChange={(e, d) => {
+                        if (Platform.OS === 'android') {
+                          setShowEventDatePicker(false);
+                          if (e.type === 'set' && d) {
+                            setFormData({ ...formData, event_date: format(d, 'yyyy-MM-dd') });
+                          }
+                        } else {
+                          if (d) setFormData({ ...formData, event_date: format(d, 'yyyy-MM-dd') });
+                          if (e.type === 'set' || e.type === 'dismissed') setShowEventDatePicker(false);
+                        }
+                      }}
+                    />
+                  )}
+                </View>
+
                 <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Name *</Text><TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.text }]} value={formData.name} onChangeText={handleNameChange} placeholder="Enter lead name" placeholderTextColor={colors.textTertiary} /></View>
                 <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Company Name (Optional)</Text><TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.text }]} value={formData.company_name} onChangeText={(text) => setFormData({ ...formData, company_name: text })} placeholder="Enter company name" placeholderTextColor={colors.textTertiary} /></View>
                 <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Phone Number *</Text><TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.text }]} value={formData.phone} onChangeText={handlePhoneChange} placeholder="10-digit number" placeholderTextColor={colors.textTertiary} keyboardType="phone-pad" maxLength={10} /></View>
                 <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Gmail (Optional)</Text><TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.text }]} value={formData.email} onChangeText={handleEmailChange} placeholder="example@gmail.com" placeholderTextColor={colors.textTertiary} keyboardType="email-address" autoCapitalize="none" /></View>
+
                 <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Lead Source</Text><TouchableOpacity style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]} onPress={() => { Keyboard.dismiss(); setIsSourcePickerVisible(true); }}><Text style={{ color: formData.source ? colors.text : colors.textTertiary }}>{formData.source || 'Select source'}</Text><Ionicons name="chevron-down" size={20} color={colors.textSecondary} /></TouchableOpacity></View>
-                <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Next Follow Up (Optional)</Text><TouchableOpacity style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]} onPress={() => { Keyboard.dismiss(); setShowFollowUpPicker(true); }}><Text style={{ color: formData.next_follow_up ? colors.text : colors.textTertiary }}>{formData.next_follow_up || 'Select follow up date'}</Text><Ionicons name="calendar-outline" size={20} color={colors.textSecondary} /></TouchableOpacity>{showFollowUpPicker && <DateTimePicker value={formData.next_follow_up ? parseISO(formData.next_follow_up) : new Date()} mode="date" display="default" onChange={(e, d) => { setShowFollowUpPicker(false); if (d) setFormData({ ...formData, next_follow_up: format(d, 'yyyy-MM-dd') }); }} minimumDate={new Date()} />}</View>
+
+
+
+                <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Lead Stage</Text><TouchableOpacity style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]} onPress={() => { Keyboard.dismiss(); setIsStagePickerVisible(true); }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>{formData.stage && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: LEAD_STAGES.find(s => s.value === formData.stage)?.color }} />}<Text style={{ color: colors.text }}>{LEAD_STAGES.find(s => s.value === formData.stage)?.label || 'Select stage'}</Text></View><Ionicons name="chevron-down" size={20} color={colors.textSecondary} /></TouchableOpacity></View>
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Next Follow Up (Optional)</Text>
+                  <TouchableOpacity 
+                    style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]} 
+                    onPress={() => { Keyboard.dismiss(); setShowFollowUpPicker(true); }}
+                  >
+                    <Text style={{ color: formData.next_follow_up ? colors.text : colors.textTertiary }}>{formData.next_follow_up || 'Select follow up date'}</Text>
+                    <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                  {showFollowUpPicker && (
+                    <DateTimePicker 
+                      value={formData.next_follow_up ? parseISO(formData.next_follow_up) : new Date()} 
+                      mode="date" 
+                      display="default" 
+                      onChange={(e, d) => { 
+                        if (Platform.OS === 'android') {
+                          setShowFollowUpPicker(false); 
+                          if (e.type === 'set' && d) {
+                            setFormData({ ...formData, next_follow_up: format(d, 'yyyy-MM-dd') }); 
+                          }
+                        } else {
+                          if (d) setFormData({ ...formData, next_follow_up: format(d, 'yyyy-MM-dd') });
+                          if (e.type === 'set' || e.type === 'dismissed') setShowFollowUpPicker(false);
+                        }
+                      }} 
+                      minimumDate={new Date()} 
+                    />
+                  )}
+                </View>
                 <View style={styles.inputGroup}><Text style={[styles.label, { color: colors.textSecondary }]}>Notes (Optional)</Text><TextInput style={[styles.input, styles.textArea, { backgroundColor: colors.background, color: colors.text }]} value={formData.notes} onChangeText={(text) => setFormData({ ...formData, notes: text })} placeholder="Add any details..." placeholderTextColor={colors.textTertiary} multiline numberOfLines={4} /></View>
                 <View style={styles.formFooter}><TouchableOpacity style={[styles.resetButton, { borderColor: colors.border }]} onPress={handleResetForm}><Text style={[styles.resetButtonText, { color: colors.textSecondary }]}>Reset</Text></TouchableOpacity><TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary }]} onPress={() => handleSaveLead()}><Text style={styles.submitButtonText}>{editingLeadId ? 'Update Lead' : 'Add Lead'}</Text></TouchableOpacity></View>
                 <View style={{ height: 40 }} />
@@ -684,11 +919,23 @@ export default function Leads() {
           <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '90%', maxHeight: '80%' }]}>
             <View style={styles.modalHeader}><Text style={[styles.modalTitle, { color: colors.text }]}>Filter Leads</Text><TouchableOpacity onPress={clearFilters}><Text style={{ color: colors.primary, fontWeight: '700' }}>Clear All</Text></TouchableOpacity></View>
             <ScrollView style={{ padding: 20 }}>
-              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary }]}>Creation Date Range</Text>
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary }]}>Date Range</Text>
               <View style={styles.rangeRow}>
                 <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background }]} onPress={() => setActivePicker('startDate')}><Text style={{ color: filters.startDate ? colors.text : colors.textTertiary }}>{filters.startDate || 'Start Date'}</Text></TouchableOpacity>
                 <Text style={{ color: colors.textSecondary }}>to</Text>
                 <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background }]} onPress={() => setActivePicker('endDate')}><Text style={{ color: filters.endDate ? colors.text : colors.textTertiary }}>{filters.endDate || 'End Date'}</Text></TouchableOpacity>
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 20 }]}>Lead Stage</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.stage === 'all' ? colors.primary : colors.background, borderColor: colors.primary }]} onPress={() => setFilters({ ...filters, stage: 'all' })}>
+                  <Text style={{ color: filters.stage === 'all' ? '#fff' : colors.textSecondary }}>All</Text>
+                </TouchableOpacity>
+                {LEAD_STAGES.map(s => (
+                  <TouchableOpacity key={s.value} style={[styles.filterChip, { backgroundColor: filters.stage === s.value ? colors.primary : colors.background, borderColor: colors.primary }]} onPress={() => setFilters({ ...filters, stage: s.value })}>
+                    <Text style={{ color: filters.stage === s.value ? '#fff' : colors.textSecondary }}>{s.label}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
 
               <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 20 }]}>Lead Source</Text>
@@ -704,7 +951,10 @@ export default function Leads() {
               <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 20 }]}>Name Starts From</Text>
               <TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.text }]} value={filters.nameStarts} onChangeText={(text) => setFilters({ ...filters, nameStarts: text })} placeholder="e.g. S" placeholderTextColor={colors.textTertiary} autoCapitalize="characters" maxLength={5} />
 
-              <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary, marginTop: 30, marginBottom: 20 }]} onPress={() => setIsFilterModalVisible(false)}><Text style={styles.submitButtonText}>Apply Filters</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary, marginTop: 30, marginBottom: 20 }]} onPress={() => {
+                setActiveSummaryType(null);
+                setIsFilterModalVisible(false);
+              }}><Text style={styles.submitButtonText}>Apply Filters</Text></TouchableOpacity>
             </ScrollView>
           </View>
         </View>
@@ -712,89 +962,124 @@ export default function Leads() {
       </Modal>
 
       {/* Summary Filter Custom Pickers */}
-      <Modal visible={showSummaryPicker !== null} transparent animationType="fade" onRequestClose={() => setShowSummaryPicker(null)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>
-                {showSummaryPicker === 'month' ? 'Select Month & Year' : showSummaryPicker === 'week' ? 'Select Month & Week' : 'Select Date'}
-              </Text>
-              <TouchableOpacity onPress={() => setShowSummaryPicker(null)}>
-                <Ionicons name="close" size={24} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
+      {showSummaryPicker === 'today' ? (
+        <DateTimePicker
+          value={summaryDates.today}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={onSummaryDatePickerChange}
+        />
+      ) : (
+        <Modal visible={showSummaryPicker !== null} transparent animationType="fade" onRequestClose={() => setShowSummaryPicker(null)}>
+          <View style={styles.modalOverlay}>
+            <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>
+                  {showSummaryPicker === 'month' ? 'Select Month & Year' : 'Select Month & Week'}
+                </Text>
+                <TouchableOpacity onPress={() => setShowSummaryPicker(null)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
 
-            {showSummaryPicker === 'today' ? (
-              <DateTimePicker
-                value={summaryDates.today}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={onSummaryDatePickerChange}
-              />
-            ) : showSummaryPicker === 'month' ? (
-              <View style={{ padding: 20 }}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Month</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
-                  {MONTHS.map((m, i) => (
-                    <TouchableOpacity
-                      key={m}
-                      style={[styles.filterChip, { backgroundColor: tempMonth === i ? colors.primary : colors.background, borderColor: colors.primary, marginRight: 8 }]}
-                      onPress={() => setTempMonth(i)}
-                    >
-                      <Text style={{ color: tempMonth === i ? '#fff' : colors.textSecondary }}>{m}</Text>
-                    </TouchableOpacity>
-                  ))}
+              {showSummaryPicker === 'month' ? (
+                <ScrollView contentContainerStyle={{ padding: 20 }}>
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Month</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>
+                    {MONTHS.map((m, i) => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[
+                          styles.filterChip, 
+                          { 
+                            backgroundColor: tempMonth === i ? colors.primary : colors.background, 
+                            borderColor: tempMonth === i ? colors.primary : colors.border,
+                            width: '23%',
+                            height: 40,
+                            paddingHorizontal: 0,
+                            justifyContent: 'center',
+                            alignItems: 'center'
+                          }
+                        ]}
+                        onPress={() => setTempMonth(i)}
+                      >
+                        <Text style={{ color: tempMonth === i ? '#fff' : colors.textSecondary, fontSize: 13, fontWeight: '600' }}>{m.substring(0, 3)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+
+                  <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary, height: 52 }]} onPress={handleApplyMonthYear}>
+                    <Text style={styles.submitButtonText}>Apply Filters</Text>
+                  </TouchableOpacity>
                 </ScrollView>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Year</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 30 }}>
-                  {YEARS.map((y) => (
-                    <TouchableOpacity
-                      key={y}
-                      style={[styles.filterChip, { backgroundColor: tempYear === y ? colors.primary : colors.background, borderColor: colors.primary, marginRight: 8 }]}
-                      onPress={() => setTempYear(y)}
-                    >
-                      <Text style={{ color: tempYear === y ? '#fff' : colors.textSecondary }}>{y}</Text>
-                    </TouchableOpacity>
-                  ))}
+              ) : (
+                <ScrollView contentContainerStyle={{ padding: 20 }}>
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Month</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>
+                    {MONTHS.map((m, i) => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[
+                          styles.filterChip, 
+                          { 
+                            backgroundColor: tempMonth === i ? colors.primary : colors.background, 
+                            borderColor: tempMonth === i ? colors.primary : colors.border,
+                            width: '23%',
+                            height: 40,
+                            paddingHorizontal: 0,
+                            justifyContent: 'center',
+                            alignItems: 'center'
+                          }
+                        ]}
+                        onPress={() => {
+                          setTempMonth(i);
+                          // Reset tempWeek if the new month has fewer weeks than currently selected
+                          const newMaxWeeks = getWeeksInMonthCount(i, tempYear);
+                          if (tempWeek > newMaxWeeks) {
+                            setTempWeek(newMaxWeeks);
+                          }
+                        }}
+                      >
+                        <Text style={{ color: tempMonth === i ? '#fff' : colors.textSecondary, fontSize: 13, fontWeight: '600' }}>{m.substring(0, 3)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+
+                  <Text style={[styles.label, { color: colors.textSecondary, marginBottom: 12 }]}>Select Week</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 32 }}>
+                    {Array.from({ length: getWeeksInMonthCount(tempMonth, tempYear) }, (_, i) => i + 1).map((w) => (
+                      <TouchableOpacity
+                        key={w}
+                        style={[
+                          styles.filterChip, 
+                          { 
+                            backgroundColor: tempWeek === w ? colors.primary : colors.background, 
+                            borderColor: tempWeek === w ? colors.primary : colors.border,
+                            flex: 1,
+                            minWidth: '45%',
+                            height: 44,
+                            justifyContent: 'center',
+                            alignItems: 'center'
+                          }
+                        ]}
+                        onPress={() => setTempWeek(w)}
+                      >
+                        <Text style={{ color: tempWeek === w ? '#fff' : colors.textSecondary, fontSize: 14, fontWeight: '600' }}>Week {w}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary, height: 52 }]} onPress={handleApplyMonthWeek}>
+                    <Text style={styles.submitButtonText}>Apply Filters</Text>
+                  </TouchableOpacity>
                 </ScrollView>
-                <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary }]} onPress={handleApplyMonthYear}>
-                  <Text style={styles.submitButtonText}>Apply</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={{ padding: 20 }}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Month</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
-                  {MONTHS.map((m, i) => (
-                    <TouchableOpacity
-                      key={m}
-                      style={[styles.filterChip, { backgroundColor: tempMonth === i ? colors.primary : colors.background, borderColor: colors.primary, marginRight: 8 }]}
-                      onPress={() => setTempMonth(i)}
-                    >
-                      <Text style={{ color: tempMonth === i ? '#fff' : colors.textSecondary }}>{m}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Week</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 30 }}>
-                  {WEEKS.map((w) => (
-                    <TouchableOpacity
-                      key={w}
-                      style={[styles.filterChip, { backgroundColor: tempWeek === w ? colors.primary : colors.background, borderColor: colors.primary }]}
-                      onPress={() => setTempWeek(w)}
-                    >
-                      <Text style={{ color: tempWeek === w ? '#fff' : colors.textSecondary }}>Week {w}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary }]} onPress={handleApplyMonthWeek}>
-                  <Text style={styles.submitButtonText}>Apply</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+              )}
+            </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
 
       {/* Other Modals (Sort, Source Picker) */}
       <Modal visible={isSortModalVisible} transparent animationType="fade" onRequestClose={() => setIsSortModalVisible(false)}>
@@ -802,7 +1087,123 @@ export default function Leads() {
       </Modal>
 
       <Modal visible={isSourcePickerVisible} transparent={true} animationType="fade" onRequestClose={() => setIsSourcePickerVisible(false)}>
-        <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsSourcePickerVisible(false)}><View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}><View style={styles.pickerHeader}><Text style={[styles.pickerTitle, { color: colors.text }]}>Select Lead Source</Text></View><FlatList data={leadSources} keyExtractor={(item) => item.id.toString()} renderItem={({ item }) => (<TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => { setFormData({ ...formData, source: item.label }); setIsSourcePickerVisible(false); }}><Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>{formData.source === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}</TouchableOpacity>)} /></View></TouchableOpacity>
+        <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsSourcePickerVisible(false)}>
+          <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
+            <View style={styles.pickerHeader}><Text style={[styles.pickerTitle, { color: colors.text }]}>Select Lead Source</Text></View>
+            <FlatList
+              data={leadSources}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                  onPress={() => { setFormData({ ...formData, source: item.label }); setIsSourcePickerVisible(false); }}
+                >
+                  <Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>
+                  {formData.source === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={isEventTypePickerVisible} transparent={true} animationType="fade" onRequestClose={() => setIsEventTypePickerVisible(false)}>
+        <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsEventTypePickerVisible(false)}>
+          <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
+            <View style={styles.pickerHeader}><Text style={[styles.pickerTitle, { color: colors.text }]}>Select Event Type</Text></View>
+            <FlatList
+              data={eventTypes}
+              keyExtractor={(item) => item.id.toString()}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                  onPress={() => { setFormData({ ...formData, event_type: item.label }); setIsEventTypePickerVisible(false); }}
+                >
+                  <Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>
+                  {formData.event_type === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={isStagePickerVisible} transparent={true} animationType="fade" onRequestClose={() => setIsStagePickerVisible(false)}>
+        <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsStagePickerVisible(false)}>
+          <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
+            <View style={styles.pickerHeader}><Text style={[styles.pickerTitle, { color: colors.text }]}>Select Lead Stage</Text></View>
+            <FlatList
+              data={LEAD_STAGES}
+              keyExtractor={(item) => item.value}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                  onPress={() => { setFormData({ ...formData, stage: item.value }); setIsStagePickerVisible(false); }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: item.color }} />
+                    <Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>
+                  </View>
+                  {formData.stage === item.value && <Ionicons name="checkmark" size={20} color={colors.primary} />}
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Lead Detail Modal */}
+      <Modal visible={isDetailModalVisible} animationType="fade" transparent={true} onRequestClose={() => setIsDetailModalVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setIsDetailModalVisible(false)}>
+          <View style={[styles.modalContainer, { width: '90%' }]}>
+            <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={[styles.modalTitle, { color: colors.text }]}>Lead Details</Text>
+                  <Text style={{ color: colors.primary, fontWeight: '700' }}>{selectedLeadForDetail?.lead_id}</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}>
+                  <Ionicons name="close" size={28} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}>
+                <DetailRow label="Name" value={selectedLeadForDetail?.name} icon="person-outline" />
+                <DetailRow label="Company" value={selectedLeadForDetail?.company_name} icon="business-outline" />
+                <DetailRow label="Phone" value={selectedLeadForDetail?.phone} icon="call-outline" />
+                <DetailRow label="Email" value={selectedLeadForDetail?.email} icon="mail-outline" />
+                <DetailRow label="Source" value={selectedLeadForDetail?.source} icon="share-social-outline" />
+                <View style={styles.detailRow}>
+                  <View style={[styles.detailIconContainer, { backgroundColor: colors.primary + '15' }]}>
+                    <Ionicons name="flag-outline" size={20} color={colors.primary} />
+                  </View>
+                  <View style={styles.detailTextContainer}>
+                    <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Stage</Text>
+                    <View style={[styles.stageBadge, { backgroundColor: LEAD_STAGES.find(s => s.value === selectedLeadForDetail?.stage)?.color + '20' || colors.primary + '20', marginTop: 4 }]}>
+                      <Text style={[styles.stageText, { color: LEAD_STAGES.find(s => s.value === selectedLeadForDetail?.stage)?.color || colors.primary }]}>
+                        {LEAD_STAGES.find(s => s.value === selectedLeadForDetail?.stage)?.label || selectedLeadForDetail?.stage || 'New'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+                <DetailRow label="Event Date" value={selectedLeadForDetail?.event_date} icon="calendar-outline" />
+                <DetailRow label="Next Follow Up" value={selectedLeadForDetail?.next_follow_up} icon="alarm-outline" />
+                <DetailRow label="Notes" value={selectedLeadForDetail?.notes} icon="document-text-outline" />
+                <View style={{ height: 20 }} />
+                <TouchableOpacity 
+                  style={[styles.submitButton, { backgroundColor: colors.primary, width: '100%', marginBottom: 10 }]} 
+                  onPress={() => {
+                    if (selectedLeadForDetail) {
+                      setIsDetailModalVisible(false);
+                      handleEdit(selectedLeadForDetail);
+                    }
+                  }}
+                >
+                  <Text style={styles.submitButtonText}>Edit Lead</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </TouchableOpacity>
       </Modal>
     </View>
   );
@@ -810,7 +1211,11 @@ export default function Leads() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  summaryContainer: { flexDirection: 'row', padding: 16, gap: 12, justifyContent: 'space-between' },
+  summaryContainer: { padding: 16, gap: 12 },
+  summaryCardsRow: { flexDirection: 'row', gap: 12, justifyContent: 'space-between' },
+  clearSummaryBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, marginTop: 4 },
+  clearSummaryBadge: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  clearSummaryText: { fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
   summaryCard: { flex: 1, borderRadius: 16, padding: 0, elevation: 4, overflow: 'hidden' },
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12 },
   summaryCount: { color: '#fff', fontWeight: '800' },
@@ -827,19 +1232,22 @@ const styles = StyleSheet.create({
   addBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   tableContainer: { flex: 1, borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden' },
   tableHeader: { flexDirection: 'row', padding: 16, borderBottomWidth: 1 },
-  columnHeader: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  columnHeader: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textAlign: 'center' },
   tableRow: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, alignItems: 'center' },
-  colSelect: { width: 40 },
-  colId: { width: 80 },
-  colActions: { width: 100 },
-  colDate: { width: 120 },
-  colName: { width: 180 },
-  colCompany: { width: 180 },
-  colPhone: { width: 150 },
-  colEmail: { width: 180 },
-  colSource: { width: 120 },
-  colIdName: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  colNotes: { width: 250 },
+  colSelect: { width: 40, alignItems: 'center', justifyContent: 'center' },
+  colId: { width: 80, textAlign: 'center' },
+  colActions: { width: 120, alignItems: 'center', justifyContent: 'center' },
+  colDate: { width: 120, textAlign: 'center' },
+  colName: { width: 180, textAlign: 'center' },
+  colCompany: { width: 180, textAlign: 'center' },
+  colPhone: { width: 150, textAlign: 'center' },
+  colEmail: { width: 200, textAlign: 'center' },
+  colSource: { width: 120, textAlign: 'center' },
+  colStage: { width: 120, alignItems: 'center', justifyContent: 'center' },
+  colIdName: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' },
+  colNotes: { width: 250, textAlign: 'center' },
+  stageBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  stageText: { fontSize: 12, fontWeight: '700' },
   rowActions: { flexDirection: 'row', gap: 12, alignItems: 'center' },
   actionBtn: { padding: 4 },
   leadName: { fontSize: 15, fontWeight: '700' },
@@ -878,4 +1286,9 @@ const styles = StyleSheet.create({
   filterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1 },
   filterSectionTitle: { fontSize: 14, fontWeight: '700', marginBottom: 10 },
   rangeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 15 },
+  detailIconContainer: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  detailTextContainer: { flex: 1 },
+  detailLabel: { fontSize: 12, fontWeight: '600', marginBottom: 2 },
+  detailValue: { fontSize: 16, fontWeight: '600' },
 });
