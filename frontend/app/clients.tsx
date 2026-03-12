@@ -1027,33 +1027,11 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Client ID</Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
-                    value={editingClientId ? formData.client_id : getNextClientId()}
-                    editable={!!editingClientId}
+                    value={formData.client_id}
                     onChangeText={(text) => setFormData({ ...formData, client_id: text })}
                     placeholder="Auto-generated (e.g., C0001)"
                     placeholderTextColor={colors.textTertiary}
                   />
-                // Format client_id to always show Cxxxx (e.g., C0001)
-                function formatClientId(client_id: string, clients: any[], editingClientId: number | null) {
-                  if (client_id && /^C\d{4,}$/.test(client_id)) return client_id;
-                  // If editing, show the actual client_id
-                  if (editingClientId) {
-                    const client = clients.find(c => c.id === editingClientId);
-                    if (client && client.client_id) return client.client_id;
-                  }
-                  // Otherwise, generate next
-                  const existingIds = new Set<number>();
-                  clients.forEach(c => {
-                    if (c.client_id) {
-                      const digits = c.client_id.replace(/\D/g, '');
-                      const n = parseInt(digits, 10);
-                      if (!isNaN(n)) existingIds.add(n);
-                    }
-                  });
-                  let nextNumber = 1;
-                  while (existingIds.has(nextNumber)) nextNumber++;
-                  return 'C' + nextNumber.toString().padStart(4, '0');
-                }
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -1071,40 +1049,12 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Phone *</Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
-                    value={formatPhoneWithCountryCode(formData.phone)}
-                    onChangeText={(text) => {
-                      // Remove all non-digit characters except +
-                      let cleaned = text.replace(/[^0-9+]/g, '');
-                      // Ensure +91 is always present at the start
-                      if (!cleaned.startsWith('+91')) {
-                        if (cleaned.startsWith('91')) {
-                          cleaned = '+' + cleaned;
-                        } else if (cleaned.startsWith('+')) {
-                          cleaned = '+91' + cleaned.replace(/^\+/, '');
-                        } else {
-                          cleaned = '+91' + cleaned.replace(/^0+/, '');
-                        }
-                      }
-                      setFormData({ ...formData, phone: cleaned });
-                    }}
+                    value={formData.phone}
+                    onChangeText={(text) => setFormData({ ...formData, phone: text })}
                     placeholder="Enter phone number"
                     placeholderTextColor={colors.textTertiary}
                     keyboardType="phone-pad"
                   />
-                // Format phone number to always show +91 and a space
-                function formatPhoneWithCountryCode(phone: string) {
-                  if (!phone) return '';
-                  if (phone.startsWith('+91')) {
-                    return '+91 ' + phone.slice(3);
-                  }
-                  if (phone.startsWith('91')) {
-                    return '+91 ' + phone.slice(2);
-                  }
-                  if (phone.startsWith('+')) {
-                    return '+91 ' + phone.replace(/^\+/, '');
-                  }
-                  return '+91 ' + phone.replace(/^0+/, '');
-                }
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -1196,23 +1146,12 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Total Price</Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
-                    value={formatWithCommas(formData.total_price)}
-                    onChangeText={(text) => {
-                      // Remove all non-digit characters
-                      const numeric = text.replace(/[^0-9]/g, '');
-                      setFormData({ ...formData, total_price: numeric });
-                    }}
+                    value={formData.total_price}
+                    onChangeText={(text) => setFormData({ ...formData, total_price: text })}
                     placeholder="₹ 0"
                     placeholderTextColor={colors.textTertiary}
                     keyboardType="numeric"
                   />
-                // Format a string or number with commas (Indian style)
-                function formatWithCommas(value: string | number) {
-                  if (!value) return '';
-                  const num = typeof value === 'string' ? parseInt(value.replace(/[^0-9]/g, '')) : value;
-                  if (isNaN(num)) return '';
-                  return num.toLocaleString('en-IN');
-                }
                 </View>
 
                 <View style={styles.inputGroup}>
