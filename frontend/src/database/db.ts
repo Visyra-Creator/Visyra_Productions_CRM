@@ -268,6 +268,7 @@ export const initDatabase = async () => {
 
       // Client migrations
       await ensureColumn('clients', 'company_name', 'TEXT');
+      await ensureColumn('clients', 'next_follow_up', 'TEXT');
 
       const seedOptions = async (type: string, labels: string[]) => {
         try {
