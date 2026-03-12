@@ -39,6 +39,7 @@ interface Client {
   name: string;
   phone: string;
   email: string;
+  company_name?: string;
   event_type: string;
   event_date: string;
   event_location: string;
@@ -112,20 +113,36 @@ export default function Clients() {
   // UI State
   const [modalVisible, setModalVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
   const [sortBy, setSortBy] = useState<SortKey>('id_asc');
   const [isSortModalVisible, setIsSortModalVisible] = useState(false);
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [isEventTypePickerVisible, setIsEventTypePickerVisible] = useState(false);
   const [isPackagePickerVisible, setIsPackagePickerVisible] = useState(false);
   const [isSourcePickerVisible, setIsSourcePickerVisible] = useState(false);
+  const [showEventDatePicker, setShowEventDatePicker] = useState(false);
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
   const [selectedClientForDetail, setSelectedClientForDetail] = useState<Client | null>(null);
 
+  // Advanced Filter State
+  const [filters, setFilters] = useState({
+    startDate: '',
+    endDate: '',
+    status: 'all',
+    event_type: 'all',
+    lead_source: 'all',
+    company_name: '',
+    minPrice: '',
+    maxPrice: ''
+  });
+  const [activePicker, setActivePicker] = useState<string | null>(null);
+
   const [formData, setFormData] = useState({
+    client_id: '',
     name: '',
     phone: '',
     email: '',
+    company_name: '',
     event_type: '',
     event_date: format(new Date(), 'yyyy-MM-dd'),
     event_location: '',
@@ -135,6 +152,34 @@ export default function Clients() {
     notes: '',
     status: 'booked'
   });
+
+  // auto-generate next client_id based on existing clients
+  // new format: C followed by four digits (e.g. C0001)
+  // Fills gaps first - if C0001 is deleted, next new client gets C0001
+  const getNextClientId = () => {
+    const existingIds = new Set<number>();
+    
+    clients.forEach(c => {
+      if (c.client_id) {
+        // strip non-digits, then parse
+        const digits = c.client_id.replace(/\D/g, '');
+        const n = parseInt(digits, 10);
+        if (!isNaN(n)) {
+          existingIds.add(n);
+        }
+      }
+    });
+
+    // Find the first missing number starting from 1
+    let nextNumber = 1;
+    while (existingIds.has(nextNumber)) {
+      nextNumber++;
+    }
+
+    // Format as C0001, C0002, etc.
+    if (nextNumber > 9999) return 'C' + nextNumber.toString();
+    return 'C' + nextNumber.toString().padStart(4, '0');
+  };
 
   const loadData = useCallback(async () => {
     try {
@@ -146,9 +191,22 @@ export default function Clients() {
       setDbReady(true);
       setLoading(true);
 
+      // Load clients
       const result = await db.getAllAsync('SELECT * FROM clients ORDER BY id ASC');
       const allClients = result as Client[];
       setClients(allClients);
+
+      // Load event types
+      const eventTypesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "event_type" ORDER BY label ASC');
+      setEventTypes(eventTypesResult as AppOption[]);
+
+      // Load packages
+      const packagesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "package" ORDER BY label ASC');
+      setAvailablePackages(packagesResult as AppOption[]);
+
+      // Load lead sources
+      const leadSourcesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "lead_source" ORDER BY label ASC');
+      setLeadSources(leadSourcesResult as AppOption[]);
 
       // Calculate Stats
       let todayCount = 0;
@@ -199,7 +257,6 @@ export default function Clients() {
       setActiveSummaryType(null);
       // clear other UI filters (search/status)
       setSearchQuery('');
-      setStatusFilter('all');
       setTimeout(() => {
         setActiveSummaryType('today');
         setShowSummaryPicker(null);
@@ -253,8 +310,32 @@ export default function Clients() {
       );
     }
 
-    if (statusFilter !== 'all') {
-      result = result.filter(c => (c.status || 'booked').toLowerCase() === statusFilter);
+    // Apply filters
+    if (filters.startDate) {
+      result = result.filter(c => c.event_date >= filters.startDate);
+    }
+    if (filters.endDate) {
+      result = result.filter(c => c.event_date <= filters.endDate);
+    }
+    if (filters.status !== 'all') {
+      result = result.filter(c => (c.status || 'booked').toLowerCase() === filters.status.toLowerCase());
+    }
+    if (filters.event_type !== 'all') {
+      result = result.filter(c => c.event_type === filters.event_type);
+    }
+    if (filters.lead_source !== 'all') {
+      result = result.filter(c => c.lead_source === filters.lead_source);
+    }
+    if (filters.company_name) {
+      result = result.filter(c => c.company_name && c.company_name.toLowerCase().includes(filters.company_name.toLowerCase()));
+    }
+    if (filters.minPrice) {
+      const minPrice = parseFloat(filters.minPrice);
+      result = result.filter(c => (c.total_price || 0) >= minPrice);
+    }
+    if (filters.maxPrice) {
+      const maxPrice = parseFloat(filters.maxPrice);
+      result = result.filter(c => (c.total_price || 0) <= maxPrice);
     }
 
     result.sort((a, b) => {
@@ -270,7 +351,32 @@ export default function Clients() {
 
     // sequencing is handled by FlatList index when rendering; we keep db ids untouched
     return result;
-  }, [clients, searchQuery, statusFilter, sortBy, activeSummaryType, summaryDates]);
+  }, [clients, searchQuery, sortBy, activeSummaryType, summaryDates]);
+
+  const isAnyFilterActive = useMemo(() => {
+    return filters.startDate !== '' || filters.endDate !== '' || filters.status !== 'all' || filters.event_type !== 'all' || filters.lead_source !== 'all' || filters.company_name !== '' || filters.minPrice !== '' || filters.maxPrice !== '' || activeSummaryType !== null;
+  }, [filters, activeSummaryType]);
+
+  const clearFilters = () => {
+    setFilters({ startDate: '', endDate: '', status: 'all', event_type: 'all', lead_source: 'all', company_name: '', minPrice: '', maxPrice: '' });
+    resetSummarySelection();
+  };
+
+  const onFilterDatePickerChange = (event: any, date?: Date) => {
+    const picker = activePicker;
+    if (Platform.OS === 'android') {
+      setActivePicker(null);
+      if (event.type === 'set' && date) {
+        const formattedDate = format(date, 'yyyy-MM-dd');
+        setFilters(prev => ({ ...prev, [picker!]: formattedDate }));
+      }
+    } else {
+      if (date) {
+        const formattedDate = format(date, 'yyyy-MM-dd');
+        setFilters(prev => ({ ...prev, [picker!]: formattedDate }));
+      }
+    }
+  };
 
   const displayStats = useMemo(() => {
     let todayCount = 0;
@@ -297,8 +403,54 @@ export default function Clients() {
   }, [processedClients]);
 
   const handleSaveClient = async () => {
-    if (!formData.name || !formData.phone) {
-      Alert.alert('Error', 'Please fill in name and phone');
+    // Validation rules
+    if (!formData.client_id || formData.client_id.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter a Client ID (e.g., C0001)');
+      return;
+    }
+
+    if (!formData.name || formData.name.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter a client name');
+      return;
+    }
+
+    if (!formData.phone || formData.phone.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter a phone number');
+      return;
+    }
+
+    if (formData.phone.length < 10) {
+      Alert.alert('Validation Error', 'Phone number must be at least 10 digits');
+      return;
+    }
+
+    if (formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      Alert.alert('Validation Error', 'Please enter a valid email address');
+      return;
+    }
+
+    if (!formData.event_date || formData.event_date.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter an event date');
+      return;
+    }
+
+    if (!formData.event_location || formData.event_location.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter an event location');
+      return;
+    }
+
+    if (!formData.event_type || formData.event_type.trim() === '') {
+      Alert.alert('Validation Error', 'Please select an event type');
+      return;
+    }
+
+    if (!formData.lead_source || formData.lead_source.trim() === '') {
+      Alert.alert('Validation Error', 'Please select a lead source');
+      return;
+    }
+
+    if (formData.total_price && isNaN(parseFloat(formData.total_price))) {
+      Alert.alert('Validation Error', 'Please enter a valid total price');
       return;
     }
 
@@ -309,13 +461,13 @@ export default function Clients() {
 
       if (editingClientId) {
         await db.runAsync(
-          'UPDATE clients SET name=?, phone=?, email=?, event_type=?, event_date=?, event_location=?, package_name=?, total_price=?, lead_source=?, notes=?, status=? WHERE id=?',
-          [formData.name, formData.phone, formData.email, formData.event_type, formData.event_date, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.notes, formData.status, editingClientId]
+          'UPDATE clients SET client_id=?, name=?, phone=?, email=?, company_name=?, event_type=?, event_date=?, event_location=?, package_name=?, total_price=?, lead_source=?, notes=?, status=? WHERE id=?',
+          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.notes, formData.status, editingClientId]
         );
       } else {
         await db.runAsync(
-          'INSERT INTO clients (name, phone, email, event_type, event_date, event_location, package_name, total_price, lead_source, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [formData.name, formData.phone, formData.email, formData.event_type, formData.event_date, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.notes, formData.status]
+          'INSERT INTO clients (client_id, name, phone, email, company_name, event_type, event_date, event_location, package_name, total_price, lead_source, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.notes, formData.status]
         );
       }
       
@@ -331,9 +483,11 @@ export default function Clients() {
 
   const handleEdit = (client: Client) => {
     setFormData({
+      client_id: client.client_id || '',
       name: client.name,
       phone: client.phone,
       email: client.email || '',
+      company_name: client.company_name || '',
       event_type: client.event_type || '',
       event_date: client.event_date,
       event_location: client.event_location || '',
@@ -383,7 +537,7 @@ export default function Clients() {
                 [
                   client.name,
                   client.email || null,
-                  client.event_location || null, // restore company name from location
+                  client.company_name || null,
                   client.event_type || null,
                   client.event_date || null,
                   client.lead_source || null,
@@ -399,7 +553,7 @@ export default function Clients() {
                   client.name,
                   client.phone,
                   client.email || null,
-                  client.event_location || null,
+                  client.company_name || null,
                   client.event_type || null,
                   client.event_date || null,
                   client.lead_source || null,
@@ -420,11 +574,46 @@ export default function Clients() {
         }}
     ]);
   };
+
+  const handleConvertToPayment = (client: Client) => {
+    Alert.alert('Convert to Payment', 'Create a payment record for this client?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Convert', onPress: async () => {
+          try {
+            const db = getDatabase();
+            if (!db) return;
+
+            // Generate payment_id
+            const lastPayment: any[] = await db.getAllAsync('SELECT payment_id FROM payments ORDER BY id DESC LIMIT 1');
+            let paymentNumber = 1;
+            if (lastPayment.length > 0 && lastPayment[0].payment_id) {
+              const digits = lastPayment[0].payment_id.replace(/\D/g, '');
+              paymentNumber = parseInt(digits, 10) + 1;
+            }
+            const payment_id = 'P' + paymentNumber.toString().padStart(4, '0');
+
+            // Create payment record
+            await db.runAsync(
+              'INSERT INTO payments (payment_id, client_id, total_amount, paid_amount, balance, payment_date, status, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+              [payment_id, client.id, client.total_price || 0, 0, client.total_price || 0, format(new Date(), 'yyyy-MM-dd'), 'pending', 'UPI']
+            );
+
+            Alert.alert('Success', `Payment record created: ${payment_id}`);
+            loadData();
+          } catch (error) {
+            console.error('Convert to payment failed', error);
+            Alert.alert('Error', 'Failed to convert to payment');
+          }
+        }}
+    ]);
+  };
   const resetForm = () => {
     setFormData({
+      client_id: getNextClientId(),
       name: '',
       phone: '',
       email: '',
+      company_name: '',
       event_type: '',
       event_date: format(new Date(), 'yyyy-MM-dd'),
       event_location: '',
@@ -440,7 +629,6 @@ export default function Clients() {
   const resetSummarySelection = () => {
     const now = new Date();
     setSearchQuery('');
-    setStatusFilter('all');
     setSummaryDates({
       today: now,
       week: now,
@@ -481,8 +669,28 @@ export default function Clients() {
     </View>
   );
 
+  const getSummaryTitle = (type: 'today' | 'week' | 'month', defaultTitle: string) => {
+    const date = summaryDates[type];
+    const today = new Date();
+    if (type === 'today') {
+      return isSameDay(date, today) ? 'Total Clients (Today)' : `Clients (${format(date, 'MMM dd')})`;
+    } else if (type === 'week') {
+      const monthStart = startOfWeek(new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1), { weekStartsOn: 1 });
+      let start = startOfWeek(date, { weekStartsOn: 1 });
+      if (start < monthStart) {
+        start = new Date(selectedWeekMonthYear.year, selectedWeekMonthYear.month, 1);
+      }
+      const end = endOfWeek(start, { weekStartsOn: 1 });
+      const isCurrentWeek = isSameWeek(start, today, { weekStartsOn: 1 });
+      return isCurrentWeek ? 'Total Clients (Week)' : `${format(start, 'MMM dd')} - ${format(end, 'dd')}`;
+    } else {
+      return isSameMonth(date, today) ? 'Total Clients (Month)' : `Clients (${format(date, 'MMM yyyy')})`;
+    }
+  };
+
 const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     const isActive = activeSummaryType === type;
+    const displayTitle = getSummaryTitle(type, title);
 
     const getDateDisplay = () => {
       const today = new Date();
@@ -537,12 +745,11 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
             console.log('Toggling activeSummaryType to:', newType);
             setActiveSummaryType(newType);
             setSearchQuery('');
-            setStatusFilter('all');
           }}
         >
           <View style={{ flex: 1 }}>
             <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count}</Text>
-            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]}>{title}</Text>
+            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>{displayTitle}</Text>
             {isActive && (
               <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : 9 }]}>{getDateDisplay()}</Text>
             )}
@@ -566,50 +773,54 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     <View style={[styles.tableHeader, { borderBottomColor: colors.border, backgroundColor: colors.surface }]}>
       <Text style={[styles.columnHeader, styles.colId, { color: colors.textSecondary }]}>ID</Text>
       <Text style={[styles.columnHeader, styles.colActions, { color: colors.textSecondary }]}>ACTIONS</Text>
-      <Text style={[styles.columnHeader, styles.colDate, { color: colors.textSecondary }]}>EVENT DATE</Text>
+      <Text style={[styles.columnHeader, styles.colDate, { color: colors.textSecondary }]}>DATE</Text>
       <Text style={[styles.columnHeader, styles.colName, { color: colors.textSecondary }]}>NAME</Text>
       <Text style={[styles.columnHeader, styles.colPhone, { color: colors.textSecondary }]}>PHONE</Text>
-      <Text style={[styles.columnHeader, styles.colEvent, { color: colors.textSecondary }]}>EVENT TYPE</Text>
+      <Text style={[styles.columnHeader, styles.colCompany, { color: colors.textSecondary }]}>COMPANY</Text>
       <Text style={[styles.columnHeader, styles.colLocation, { color: colors.textSecondary }]}>LOCATION</Text>
+      <Text style={[styles.columnHeader, styles.colEvent, { color: colors.textSecondary }]}>EVENT TYPE</Text>
+      <Text style={[styles.columnHeader, styles.colEventDate, { color: colors.textSecondary }]}>EVENT DATE</Text>
       <Text style={[styles.columnHeader, styles.colPackage, { color: colors.textSecondary }]}>PACKAGES</Text>
       <Text style={[styles.columnHeader, styles.colPrice, { color: colors.textSecondary }]}>TOTAL</Text>
       <Text style={[styles.columnHeader, styles.colSource, { color: colors.textSecondary }]}>SOURCE</Text>
-      <Text style={[styles.columnHeader, styles.colNotes, { color: colors.textSecondary }]}>NOTES</Text>
       <Text style={[styles.columnHeader, styles.colStatus, { color: colors.textSecondary }]}>STATUS</Text>
+      <Text style={[styles.columnHeader, styles.colNotes, { color: colors.textSecondary }]}>NOTES</Text>
     </View>
   );
 
   const renderClientRow = ({ item: client, index }: { item: Client; index: number }) => (
     <View key={client.id} style={[styles.tableRow, { borderBottomColor: colors.border }]}>
-      <Text style={[styles.colId, { color: colors.primary, fontWeight: '700' }]} numberOfLines={1}>{index + 1}</Text>
+      <Text style={[styles.colId, { color: colors.primary, fontWeight: '700', fontSize: 13 }]} numberOfLines={1}>{client.client_id || `C${(index + 1).toString().padStart(4, '0')}`}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
-        <TouchableOpacity onPress={() => handleRestore(client)} style={styles.actionBtn}>
-          <Ionicons name="arrow-back-outline" size={20} color={colors.success} />
+        <TouchableOpacity onPress={() => handleConvertToPayment(client)} style={styles.actionBtn} title="Convert to Payment">
+          <Ionicons name="card-outline" size={18} color={colors.success} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => { setSelectedClientForDetail(client); setIsDetailModalVisible(true); }} style={styles.actionBtn}>
-          <Ionicons name="eye-outline" size={20} color={colors.info} />
+          <Ionicons name="eye-outline" size={18} color={colors.info} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => handleEdit(client)} style={styles.actionBtn}>
-          <Ionicons name="create-outline" size={20} color={colors.primary} />
+          <Ionicons name="create-outline" size={18} color={colors.primary} />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => handleDelete(client.id)} style={styles.actionBtn}>
-          <Ionicons name="trash-outline" size={20} color={colors.error} />
+          <Ionicons name="trash-outline" size={18} color={colors.error} />
         </TouchableOpacity>
       </View>
-      <Text style={[styles.colDate, { color: colors.textSecondary }]} numberOfLines={1}>{client.event_date}</Text>
-      <Text style={[styles.colName, styles.clientName, { color: colors.text }]} numberOfLines={1}>{client.name}</Text>
-      <Text style={[styles.colPhone, { color: colors.textSecondary }]} numberOfLines={1}>{client.phone}</Text>
-      <Text style={[styles.colEvent, { color: colors.textSecondary }]} numberOfLines={1}>{client.event_type || '-'}</Text>
-      <Text style={[styles.colLocation, { color: colors.textSecondary }]} numberOfLines={1}>{client.event_location || '-'}</Text>
-      <Text style={[styles.colPackage, { color: colors.textSecondary }]} numberOfLines={1}>{client.package_name || '-'}</Text>
-      <Text style={[styles.colPrice, { color: colors.textSecondary }]}>₹{(client.total_price || 0).toLocaleString()}</Text>
-      <Text style={[styles.colSource, { color: colors.textSecondary }]} numberOfLines={1}>{client.lead_source || '-'}</Text>
-      <Text style={[styles.colNotes, { color: colors.textSecondary }]} numberOfLines={1}>{client.notes || '-'}</Text>
+      <Text style={[styles.colDate, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.created_at ? format(parseISO(client.created_at), 'dd-MMM-yy') : format(new Date(), 'dd-MMM-yy')}</Text>
+      <Text style={[styles.colName, styles.clientName, { color: colors.text, fontSize: 14 }]} numberOfLines={1}>{client.name}</Text>
+      <Text style={[styles.colPhone, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.phone.startsWith('+91') ? `+91 ${client.phone.slice(3)}` : client.phone}</Text>
+      <Text style={[styles.colCompany, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.company_name || '-'}</Text>
+      <Text style={[styles.colLocation, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_location || '-'}</Text>
+      <Text style={[styles.colEvent, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_type || '-'}</Text>
+      <Text style={[styles.colEventDate, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_date ? format(parseISO(client.event_date), 'dd-MMM-yy') : '-'}</Text>
+      <Text style={[styles.colPackage, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.package_name || '-'}</Text>
+      <Text style={[styles.colPrice, { color: colors.textSecondary, fontSize: 13, fontWeight: '600' }]} numberOfLines={1}>₹{(client.total_price || 0).toLocaleString()}</Text>
+      <Text style={[styles.colSource, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.lead_source || '-'}</Text>
       <View style={[styles.colStatus, { alignItems: 'center', justifyContent: 'center' }]}>
         <View style={[styles.statusBadge, { backgroundColor: getStatusColor(client.status) + '20', borderColor: getStatusColor(client.status) }]}>
           <Text style={[styles.statusText, { color: getStatusColor(client.status) }]}>{client.status || 'Booked'}</Text>
         </View>
       </View>
+      <Text style={[styles.colNotes, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.notes || '-'}</Text>
     </View>
   );
 
@@ -639,9 +850,9 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Summary Cards */}
       <View style={styles.summaryContainer}>
-        <SummaryCard type="today" title="Today" count={displayStats.today} icon="today-outline" gradient={['#3b82f6', '#2563eb']} />
-        <SummaryCard type="week" title="This Week" count={displayStats.week} icon="calendar-outline" gradient={['#8b5cf6', '#7c3aed']} />
-        <SummaryCard type="month" title="This Month" count={displayStats.month} icon="pie-chart-outline" gradient={['#ec4899', '#db2777']} />
+        <SummaryCard type="today" title="Total Clients (Today)" count={displayStats.today} icon="people" gradient={['#3b82f6', '#2563eb']} />
+        <SummaryCard type="week" title="Total Clients (Week)" count={displayStats.week} icon="calendar" gradient={['#8b5cf6', '#7c3aed']} />
+        <SummaryCard type="month" title="Total Clients (Month)" count={displayStats.month} icon="pie-chart" gradient={['#ec4899', '#db2777']} />
       </View>
 
       {/* Filter and Search Bar */}
@@ -680,35 +891,19 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
         </TouchableOpacity>
 
         <TouchableOpacity
+          style={[styles.iconButton, { backgroundColor: isAnyFilterActive ? colors.primary : colors.surface }]}
+          onPress={() => setIsFilterModalVisible(true)}
+        >
+          <Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? '#fff' : colors.textSecondary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
           onPress={() => { resetForm(); setModalVisible(true); }}
         >
           <Ionicons name="add" size={24} color="#fff" />
           <Text style={styles.addBtnText}>Add Client</Text>
         </TouchableOpacity>
-      </View>
-
-      {/* Horizontal Status Filter */}
-      <View style={styles.statusFilterContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statusFilterScroll}>
-          {CLIENT_STATUSES.map((s) => (
-            <TouchableOpacity
-              key={s.key}
-              style={[
-                styles.filterChip,
-                {
-                  backgroundColor: statusFilter === s.key ? (s.color || colors.primary) : colors.surface,
-                  borderColor: statusFilter === s.key ? (s.color || colors.primary) : colors.border
-                }
-              ]}
-              onPress={() => setStatusFilter(s.key)}
-            >
-              <Text style={[styles.filterChipText, { color: statusFilter === s.key ? '#fff' : colors.textSecondary }]}>
-                {s.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
       </View>
 
       {/* Table View */}
@@ -732,6 +927,89 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
         </ScrollView>
       </View>
 
+      {/* Filter Modal */}
+      <Modal visible={isFilterModalVisible} transparent={true} animationType="fade" onRequestClose={() => setIsFilterModalVisible(false)}>
+        <View style={[styles.modalOverlay, { justifyContent: 'flex-start', paddingTop: '10%' }]}>
+          <TouchableOpacity activeOpacity={1} style={{ flex: 1, width: '100%' }} onPress={() => setIsFilterModalVisible(false)} />
+          <View style={{ backgroundColor: colors.surface, width: '90%', borderRadius: 24, overflow: 'hidden', maxHeight: '80%', minHeight: '50%', alignSelf: 'center' }}>
+            <View style={[styles.modalHeader, { borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>Filter Clients</Text>
+              <TouchableOpacity onPress={clearFilters}>
+                <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 14 }}>Clear All</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView nestedScrollEnabled={true} style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={true}>
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Event Date Range</Text>
+              <View style={styles.rangeRow}>
+                <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('startDate')}>
+                  <Text style={{ color: filters.startDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.startDate || 'Start Date'}</Text>
+                </TouchableOpacity>
+                <Text style={{ color: colors.textSecondary, paddingHorizontal: 8, fontSize: 12 }}>to</Text>
+                <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('endDate')}>
+                  <Text style={{ color: filters.endDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.endDate || 'End Date'}</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Client Status</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.status === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, status: 'all' })}>
+                  <Text style={{ color: filters.status === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
+                </TouchableOpacity>
+                {CLIENT_STATUSES.filter(s => s.key !== 'all').map(s => (
+                  <TouchableOpacity key={s.key} style={[styles.filterChip, { backgroundColor: filters.status === s.key ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, status: s.key })}>
+                    <Text style={{ color: filters.status === s.key ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>{s.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Event Type</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.event_type === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, event_type: 'all' })}>
+                  <Text style={{ color: filters.event_type === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
+                </TouchableOpacity>
+                {eventTypes && eventTypes.map(e => (
+                  <TouchableOpacity key={e.id} style={[styles.filterChip, { backgroundColor: filters.event_type === e.label ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, event_type: e.label })}>
+                    <Text style={{ color: filters.event_type === e.label ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>{e.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Lead Source</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.lead_source === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, lead_source: 'all' })}>
+                  <Text style={{ color: filters.lead_source === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
+                </TouchableOpacity>
+                {leadSources && leadSources.map(s => (
+                  <TouchableOpacity key={s.id} style={[styles.filterChip, { backgroundColor: filters.lead_source === s.label ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, lead_source: s.label })}>
+                    <Text style={{ color: filters.lead_source === s.label ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>{s.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Price Range (₹)</Text>
+              <View style={styles.rangeRow}>
+                <TextInput style={[styles.input, { flex: 1, backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8 }]} value={filters.minPrice} onChangeText={(text) => setFilters({ ...filters, minPrice: text })} placeholder="Min" keyboardType="numeric" placeholderTextColor={colors.textTertiary} />
+                <Text style={{ color: colors.textSecondary, paddingHorizontal: 8, fontSize: 12 }}>to</Text>
+                <TextInput style={[styles.input, { flex: 1, backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8 }]} value={filters.maxPrice} onChangeText={(text) => setFilters({ ...filters, maxPrice: text })} placeholder="Max" keyboardType="numeric" placeholderTextColor={colors.textTertiary} />
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Company Name</Text>
+              <TextInput style={[styles.input, { backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8, marginBottom: 16 }]} value={filters.company_name} onChangeText={(text) => setFilters({ ...filters, company_name: text })} placeholder="Search company..." placeholderTextColor={colors.textTertiary} />
+
+              <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary }]} onPress={() => {
+                setActiveSummaryType(null);
+                setIsFilterModalVisible(false);
+              }}>
+                <Text style={styles.submitButtonText}>Apply Filters</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+          <TouchableOpacity activeOpacity={1} style={{ flex: 1, width: '100%' }} onPress={() => setIsFilterModalVisible(false)} />
+        </View>
+        {activePicker && <DateTimePicker value={filters[activePicker as keyof typeof filters] ? parseISO(filters[activePicker as keyof typeof filters] as string) : new Date()} mode="date" onChange={onFilterDatePickerChange} />}
+      </Modal>
+
       {/* Add/Edit Modal */}
       <Modal visible={modalVisible} animationType="slide" transparent={true} onRequestClose={() => setModalVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -745,6 +1023,39 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
               </View>
 
               <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}>
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Client ID</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                    value={editingClientId ? formData.client_id : getNextClientId()}
+                    editable={!!editingClientId}
+                    onChangeText={(text) => setFormData({ ...formData, client_id: text })}
+                    placeholder="Auto-generated (e.g., C0001)"
+                    placeholderTextColor={colors.textTertiary}
+                  />
+                // Format client_id to always show Cxxxx (e.g., C0001)
+                function formatClientId(client_id: string, clients: any[], editingClientId: number | null) {
+                  if (client_id && /^C\d{4,}$/.test(client_id)) return client_id;
+                  // If editing, show the actual client_id
+                  if (editingClientId) {
+                    const client = clients.find(c => c.id === editingClientId);
+                    if (client && client.client_id) return client.client_id;
+                  }
+                  // Otherwise, generate next
+                  const existingIds = new Set<number>();
+                  clients.forEach(c => {
+                    if (c.client_id) {
+                      const digits = c.client_id.replace(/\D/g, '');
+                      const n = parseInt(digits, 10);
+                      if (!isNaN(n)) existingIds.add(n);
+                    }
+                  });
+                  let nextNumber = 1;
+                  while (existingIds.has(nextNumber)) nextNumber++;
+                  return 'C' + nextNumber.toString().padStart(4, '0');
+                }
+                </View>
+
                 <View style={styles.inputGroup}>
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Name *</Text>
                   <TextInput
@@ -760,12 +1071,40 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Phone *</Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
-                    value={formData.phone}
-                    onChangeText={(text) => setFormData({ ...formData, phone: text })}
+                    value={formatPhoneWithCountryCode(formData.phone)}
+                    onChangeText={(text) => {
+                      // Remove all non-digit characters except +
+                      let cleaned = text.replace(/[^0-9+]/g, '');
+                      // Ensure +91 is always present at the start
+                      if (!cleaned.startsWith('+91')) {
+                        if (cleaned.startsWith('91')) {
+                          cleaned = '+' + cleaned;
+                        } else if (cleaned.startsWith('+')) {
+                          cleaned = '+91' + cleaned.replace(/^\+/, '');
+                        } else {
+                          cleaned = '+91' + cleaned.replace(/^0+/, '');
+                        }
+                      }
+                      setFormData({ ...formData, phone: cleaned });
+                    }}
                     placeholder="Enter phone number"
                     placeholderTextColor={colors.textTertiary}
                     keyboardType="phone-pad"
                   />
+                // Format phone number to always show +91 and a space
+                function formatPhoneWithCountryCode(phone: string) {
+                  if (!phone) return '';
+                  if (phone.startsWith('+91')) {
+                    return '+91 ' + phone.slice(3);
+                  }
+                  if (phone.startsWith('91')) {
+                    return '+91 ' + phone.slice(2);
+                  }
+                  if (phone.startsWith('+')) {
+                    return '+91 ' + phone.replace(/^\+/, '');
+                  }
+                  return '+91 ' + phone.replace(/^0+/, '');
+                }
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -782,14 +1121,38 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 </View>
 
                 <View style={styles.inputGroup}>
-                  <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date</Text>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Company Name (Optional)</Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
-                    value={formData.event_date}
-                    onChangeText={(text) => setFormData({ ...formData, event_date: text })}
-                    placeholder="YYYY-MM-DD"
+                    value={formData.company_name}
+                    onChangeText={(text) => setFormData({ ...formData, company_name: text })}
+                    placeholder="Enter company name"
                     placeholderTextColor={colors.textTertiary}
                   />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date</Text>
+                  <TouchableOpacity
+                    style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                    onPress={() => setShowEventDatePicker(true)}
+                  >
+                    <Text style={{ color: colors.text }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd-MMM-yy') : ''}</Text>
+                    <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                  {showEventDatePicker && (
+                    <DateTimePicker
+                      value={parseISO(formData.event_date)}
+                      mode="date"
+                      display="default"
+                      onChange={(event, selectedDate) => {
+                        if (selectedDate) {
+                          setFormData({ ...formData, event_date: format(selectedDate, 'yyyy-MM-dd') });
+                        }
+                        setShowEventDatePicker(false);
+                      }}
+                    />
+                  )}
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -833,12 +1196,23 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Total Price</Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
-                    value={formData.total_price}
-                    onChangeText={(text) => setFormData({ ...formData, total_price: text })}
+                    value={formatWithCommas(formData.total_price)}
+                    onChangeText={(text) => {
+                      // Remove all non-digit characters
+                      const numeric = text.replace(/[^0-9]/g, '');
+                      setFormData({ ...formData, total_price: numeric });
+                    }}
                     placeholder="₹ 0"
                     placeholderTextColor={colors.textTertiary}
                     keyboardType="numeric"
                   />
+                // Format a string or number with commas (Indian style)
+                function formatWithCommas(value: string | number) {
+                  if (!value) return '';
+                  const num = typeof value === 'string' ? parseInt(value.replace(/[^0-9]/g, '')) : value;
+                  if (isNaN(num)) return '';
+                  return num.toLocaleString('en-IN');
+                }
                 </View>
 
                 <View style={styles.inputGroup}>
@@ -911,8 +1285,9 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
               </View> 
               <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}> 
                 <DetailRow label="Name" value={selectedClientForDetail?.name} icon="person-outline" /> 
-                <DetailRow label="Phone" value={selectedClientForDetail?.phone} icon="call-outline" /> 
+                <DetailRow label="Phone" value={selectedClientForDetail?.phone.startsWith('+91') ? `+91 ${selectedClientForDetail.phone.slice(3)}` : selectedClientForDetail?.phone} icon="call-outline" /> 
                 <DetailRow label="Email" value={selectedClientForDetail?.email} icon="mail-outline" /> 
+                <DetailRow label="Company Name" value={selectedClientForDetail?.company_name} icon="business-outline" /> 
                 <DetailRow label="Event Type" value={selectedClientForDetail?.event_type} icon="calendar-outline" /> 
                 <DetailRow label="Event Date" value={selectedClientForDetail?.event_date} icon="calendar-outline" /> 
                 <DetailRow label="Location" value={selectedClientForDetail?.event_location} icon="location-outline" /> 
@@ -1016,7 +1391,6 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                       setSummaryDates(prev => ({ ...prev, month: new Date(tempYear, tempMonth, 1) }));
                       setActiveSummaryType(null);
                       setSearchQuery('');
-                      setStatusFilter('all');
                       setTimeout(() => {
                         setActiveSummaryType('month');
                         setShowSummaryPicker(null);
@@ -1089,7 +1463,6 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                       setSelectedWeekMonthYear({ month: tempMonth, year: tempYear });
                       setActiveSummaryType(null);
                       setSearchQuery('');
-                      setStatusFilter('all');
                       setTimeout(() => {
                         setActiveSummaryType('week');
                         setShowSummaryPicker(null);
@@ -1175,37 +1548,33 @@ const styles = StyleSheet.create({
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 48, paddingHorizontal: 12, borderRadius: 16, elevation: 2 },
   addBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
 
-  statusFilterContainer: { marginBottom: 16 },
-  statusFilterScroll: { paddingHorizontal: 16, gap: 8 },
-  filterChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
-  filterChipText: { fontSize: 13, fontWeight: '700' },
-
   tableContainer: { flex: 1, borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden' },
-  tableHeader: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, gap: 12 },
-  columnHeader: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textAlign: 'center' },
-  tableRow: { flexDirection: 'row', padding: 16, borderBottomWidth: 1, alignItems: 'center', gap: 12 },
+  tableHeader: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 18, borderBottomWidth: 2, gap: 16, alignItems: 'center' },
+  columnHeader: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center', textTransform: 'uppercase' },
+  tableRow: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, alignItems: 'center', gap: 16 },
 
-  colId: { width: 70, textAlign: 'center' },
-  colActions: { width: 100, alignItems: 'center', justifyContent: 'center' },
-  colDate: { width: 100, textAlign: 'center' },
-  colName: { width: 150, textAlign: 'center' },
-  colPhone: { width: 120, textAlign: 'center' },
-  colEmail: { width: 150, textAlign: 'center' },
-  colEvent: { width: 100, textAlign: 'center' },
-  colLocation: { width: 130, textAlign: 'center' },
-  colPackage: { width: 150, textAlign: 'center' },
+  colId: { width: 65, textAlign: 'center' },
+  colActions: { width: 160, alignItems: 'center', justifyContent: 'center', marginHorizontal: 8 },
+  colDate: { width: 95, textAlign: 'center' },
+  colName: { width: 125, textAlign: 'center' },
+  colPhone: { width: 115, textAlign: 'center' },
+  colCompany: { width: 120, textAlign: 'center' },
+  colLocation: { width: 120, textAlign: 'center' },
+  colEvent: { width: 110, textAlign: 'center' },
+  colEventDate: { width: 110, textAlign: 'center' },
+  colPackage: { width: 130, textAlign: 'center' },
   colPrice: { width: 100, textAlign: 'center' },
-  colSource: { width: 120, textAlign: 'center' },
-  colNotes: { width: 150, textAlign: 'center' },
-  colStatus: { width: 90, textAlign: 'center' },
+  colSource: { width: 110, textAlign: 'center' },
+  colStatus: { width: 95, textAlign: 'center' },
+  colNotes: { width: 135, textAlign: 'center' },
 
-  rowActions: { flexDirection: 'row', gap: 12, alignItems: 'center' },
-  actionBtn: { padding: 4 },
-  clientName: { fontSize: 15, fontWeight: '700' },
-  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  statusText: { fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  rowActions: { flexDirection: 'row', gap: 12, alignItems: 'center', justifyContent: 'center' },
+  actionBtn: { padding: 8, borderRadius: 6, marginHorizontal: 2 },
+  clientName: { fontSize: 16, fontWeight: '700' },
+  statusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  statusText: { fontSize: 11, fontWeight: '800', textTransform: 'uppercase' },
 
-  emptyContainer: { padding: 80, alignItems: 'center', width: Dimensions.get('window').width },
+  emptyContainer: { padding: 80, alignItems: 'center', width: Dimensions.get('window').width, justifyContent: 'center' },
   emptyText: { fontSize: 16, fontWeight: '500' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)', justifyContent: 'center', alignItems: 'center' },
@@ -1244,4 +1613,10 @@ const styles = StyleSheet.create({
   detailTextContainer: { flex: 1 },
   detailLabel: { fontSize: 12, fontWeight: '600', marginBottom: 2 },
   detailValue: { fontSize: 16, fontWeight: '600' },
+
+  // Filter modal styles
+  filterSectionTitle: { fontSize: 14, fontWeight: '700', marginBottom: 12 },
+  filterSourceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16, alignItems: 'center' },
+  filterChip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, minHeight: 40, justifyContent: 'center', alignItems: 'center' },
+  rangeRow: { flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 16 },
 });

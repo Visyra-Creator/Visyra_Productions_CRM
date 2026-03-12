@@ -896,7 +896,7 @@ export default function Leads() {
         <TouchableOpacity onPress={() => handleDelete(lead.id)} style={styles.actionBtn}><Ionicons name="trash-outline" size={20} color={colors.error} /></TouchableOpacity>
       </View>
       {/* convert icon moved inside actions, no separate column any more */}
-      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.event_date ? format(parseISO(lead.event_date), 'dd/MM/yyyy') : '-'}</Text>
+      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.event_date ? format(parseISO(lead.event_date), 'dd-MMM-yy') : '-'}</Text>
       <Text style={[styles.colName, styles.leadName, { color: colors.text }]} numberOfLines={1}>{lead.name}</Text>
       <Text style={[styles.colCompany, { color: colors.textSecondary }]} numberOfLines={1}>{lead.company_name || '-'}</Text>
       <Text style={[styles.colPhone, { color: colors.textSecondary }]}>{lead.phone.startsWith('+91') ? `+91 ${lead.phone.slice(3)}` : lead.phone}</Text>
@@ -909,7 +909,7 @@ export default function Leads() {
           </Text>
         </View>
       </View>
-      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.next_follow_up ? format(parseISO(lead.next_follow_up), 'dd/MM/yyyy') : '-'}</Text>
+      <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.next_follow_up ? format(parseISO(lead.next_follow_up), 'dd-MMM-yy') : '-'}</Text>
       <Text style={[styles.colNotes, { color: colors.textSecondary }]} numberOfLines={1}>{lead.notes || '-'}</Text>
     </View>
   );
@@ -963,11 +963,6 @@ export default function Leads() {
         </View>
 
         <View style={styles.actionButtons}>
-          {isAnyFilterActive && (
-            <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={clearFilters} title="Reset filters">
-              <Ionicons name="refresh-outline" size={20} color={colors.error} />
-            </TouchableOpacity>
-          )}
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsFilterModalVisible(true)}><Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? colors.primary : colors.textSecondary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsSortModalVisible(true)}><Ionicons name="swap-vertical" size={20} color={colors.primary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={handleImportExcel}><Ionicons name="document-text-outline" size={20} color={colors.info} /></TouchableOpacity>
@@ -1015,7 +1010,7 @@ export default function Leads() {
                     style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
                     onPress={() => { Keyboard.dismiss(); setShowEventDatePicker(true); }}
                   >
-                    <Text style={{ color: colors.text }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd/MM/yyyy') : ''}</Text>
+                    <Text style={{ color: colors.text }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd-MMM-yy') : ''}</Text>
                     <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
                   {showEventDatePicker && (

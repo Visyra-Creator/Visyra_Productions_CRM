@@ -36,6 +36,7 @@ export const initDatabase = async () => {
           name TEXT NOT NULL,
           phone TEXT,
           email TEXT,
+          company_name TEXT,
           event_type TEXT,
           event_date TEXT,
           event_location TEXT,
@@ -265,6 +266,9 @@ export const initDatabase = async () => {
       // Lead migrations
       await ensureColumn('leads', 'next_follow_up', 'TEXT');
 
+      // Client migrations
+      await ensureColumn('clients', 'company_name', 'TEXT');
+
       const seedOptions = async (type: string, labels: string[]) => {
         try {
           const result: any = await db.getAllAsync("SELECT COUNT(*) as count FROM app_options WHERE type = ?", [type]);
@@ -281,7 +285,8 @@ export const initDatabase = async () => {
 
       await seedOptions('lead_source', ['Instagram', 'Facebook', 'Referral', 'Website', 'Walk-in']);
       await seedOptions('payment_method', ['Cash', 'UPI', 'Bank Transfer', 'Cheque']);
-      await seedOptions('event_type', ['Wedding', 'Pre-Wedding', 'Engagement', 'Maternity', 'Baby Shoot', 'Corporate', 'Fashion']);
+      await seedOptions('event_type', ['Wedding', 'Pre-Wedding', 'Engagement', 'Maternity', 'Baby Shoot', 'Corporate', 'Fashion', 'Product Photography', 'Real Estate', 'Portrait']);
+      await seedOptions('package', ['Starter', 'Standard', 'Premium', 'Platinum', 'Luxury', 'Basic Couple', 'Deluxe Couple', 'Cinematic']);
       await seedOptions('shoot_category', ['Cinematic Video', 'Traditional Video', 'Candid Photo', 'Traditional Photo', 'Drone', 'Outdoor']);
 
       console.log('Database initialized and migrated successfully');
