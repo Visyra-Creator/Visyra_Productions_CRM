@@ -617,6 +617,19 @@ export default function Clients() {
     ]);
   };
 
+  const handleScheduleShoot = (client: Client) => {
+    router.push({
+      pathname: '/shoots',
+      params: {
+        autoFillClientId: client.id,
+        autoFillClientName: client.name,
+        autoFillEventType: client.event_type || '',
+        autoFillEventDate: client.event_date || '',
+        autoFillLocation: client.event_location || ''
+      }
+    });
+  };
+
   const handleRestore = (client: Client) => {
     Alert.alert('Restore Lead', 'Copy this client back to leads?', [
       { text: 'Cancel', style: 'cancel' },
@@ -893,6 +906,9 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700', fontSize: 13 }]} numberOfLines={1}>{client.client_id || `C${(index + 1).toString().padStart(4, '0')}`}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
+        <TouchableOpacity onPress={() => handleScheduleShoot(client)} style={styles.actionBtn}>
+          <Ionicons name="camera-outline" size={18} color={colors.warning} />
+        </TouchableOpacity>
         <TouchableOpacity onPress={() => handleConvertToPayment(client)} style={styles.actionBtn}>
           <Ionicons name="card-outline" size={18} color={colors.success} />
         </TouchableOpacity>
