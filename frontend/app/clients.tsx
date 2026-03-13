@@ -127,6 +127,8 @@ export default function Clients() {
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
   const [selectedClientForDetail, setSelectedClientForDetail] = useState<Client | null>(null);
+  const [dropdownVisible, setDropdownVisible] = useState(false);
+  const [dropdownClient, setDropdownClient] = useState<Client | null>(null);
 
   // Advanced Filter State
   const [filters, setFilters] = useState({
@@ -726,6 +728,7 @@ export default function Clients() {
       company_name: '',
       event_type: '',
       event_date: format(new Date(), 'yyyy-MM-dd'),
+      event_end_date: format(new Date(), 'yyyy-MM-dd'),
       event_dates: [],
       dateSelectionMode: 'range',
       event_location: '',
@@ -906,20 +909,14 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700', fontSize: 13 }]} numberOfLines={1}>{client.client_id || `C${(index + 1).toString().padStart(4, '0')}`}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
-        <TouchableOpacity onPress={() => handleScheduleShoot(client)} style={styles.actionBtn}>
-          <Ionicons name="camera-outline" size={18} color={colors.warning} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleConvertToPayment(client)} style={styles.actionBtn}>
-          <Ionicons name="card-outline" size={18} color={colors.success} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => { setSelectedClientForDetail(client); setIsDetailModalVisible(true); }} style={styles.actionBtn}>
-          <Ionicons name="eye-outline" size={18} color={colors.info} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleEdit(client)} style={styles.actionBtn}>
-          <Ionicons name="create-outline" size={18} color={colors.primary} />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleDelete(client.id)} style={styles.actionBtn}>
-          <Ionicons name="trash-outline" size={18} color={colors.error} />
+        <TouchableOpacity 
+          onPress={() => {
+            setDropdownClient(client);
+            setDropdownVisible(true);
+          }}
+          style={styles.actionBtn}
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.textSecondary} />
         </TouchableOpacity>
       </View>
       <Text style={[styles.colDate, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.created_at ? format(parseISO(client.created_at), 'dd-MMM-yy') : format(new Date(), 'dd-MMM-yy')}</Text>
@@ -1783,6 +1780,83 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Actions Dropdown Modal */}
+      <Modal visible={dropdownVisible} transparent={true} animationType="fade" onRequestClose={() => setDropdownVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setDropdownVisible(false)}>
+          <View style={[styles.dropdownContainer, { backgroundColor: colors.surface }]}>
+            <View style={styles.dropdownHeader}>
+              <Text style={[styles.dropdownTitle, { color: colors.text }]}>Actions</Text>
+              <TouchableOpacity onPress={() => setDropdownVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.dropdownActions}>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (dropdownClient) {
+                    handleScheduleShoot(dropdownClient);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="camera-outline" size={24} color={colors.warning} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Schedule Shoot</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (dropdownClient) {
+                    handleConvertToPayment(dropdownClient);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="card-outline" size={24} color={colors.success} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Convert to Payment</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (dropdownClient) {
+                    setSelectedClientForDetail(dropdownClient);
+                    setIsDetailModalVisible(true);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="eye-outline" size={24} color={colors.info} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>View Details</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (dropdownClient) {
+                    handleEdit(dropdownClient);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="create-outline" size={24} color={colors.primary} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Edit Client</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (dropdownClient) {
+                    handleDelete(dropdownClient.id);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="trash-outline" size={24} color={colors.error} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Delete Client</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
@@ -1876,4 +1950,12 @@ const styles = StyleSheet.create({
   filterSourceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16, alignItems: 'center' },
   filterChip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, minHeight: 40, justifyContent: 'center', alignItems: 'center' },
   rangeRow: { flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 16 },
+
+  // Dropdown styles
+  dropdownContainer: { width: '80%', borderRadius: 20, overflow: 'hidden', elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
+  dropdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
+  dropdownTitle: { fontSize: 18, fontWeight: '700' },
+  dropdownActions: { paddingVertical: 8 },
+  dropdownAction: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1 },
+  dropdownActionText: { fontSize: 16, fontWeight: '600', marginLeft: 16 },
 });
