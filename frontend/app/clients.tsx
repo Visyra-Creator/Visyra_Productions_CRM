@@ -29,7 +29,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
 import { LinearGradient } from 'expo-linear-gradient';
-import { format, isToday, isThisWeek, isThisMonth, parseISO, startOfWeek, endOfWeek, addWeeks, differenceInCalendarWeeks, isSameDay, isSameWeek, isSameMonth } from 'date-fns';
+import { format, parseISO, startOfWeek, endOfWeek, addWeeks, differenceInCalendarWeeks, isSameDay, isSameWeek, isSameMonth } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 
@@ -42,6 +42,8 @@ interface Client {
   company_name?: string;
   event_type: string;
   event_date: string;
+  event_dates?: string; // JSON array of dates for multiple date shoots
+  date_selection_mode?: string; // 'one_day', 'multiple', 'range'
   event_location: string;
   package_name: string;
   total_price: number;
@@ -135,7 +137,9 @@ export default function Clients() {
     lead_source: 'all',
     company_name: '',
     minPrice: '',
-    maxPrice: ''
+    maxPrice: '',
+    dateSelectionMode: 'range', // 'one_day', 'multiple', 'range'
+    selectedDates: [] as string[]  // For multiple date selection
   });
   const [activePicker, setActivePicker] = useState<string | null>(null);
 
@@ -147,6 +151,9 @@ export default function Clients() {
     company_name: '',
     event_type: '',
     event_date: format(new Date(), 'yyyy-MM-dd'),
+    event_end_date: format(new Date(), 'yyyy-MM-dd'), // Add end date field
+    event_dates: [] as string[], // For multiple dates
+    dateSelectionMode: 'range', // 'one_day', 'multiple', 'range'
     event_location: '',
     selectedPackages: [] as string[],
     total_price: '',
@@ -159,7 +166,7 @@ export default function Clients() {
   // auto-generate next client_id based on existing clients
   // new format: C followed by four digits (e.g. C0001)
   // Fills gaps first - if C0001 is deleted, next new client gets C0001
-  const getNextClientId = () => {
+  const getNextClientId = useCallback(() => {
     const existingIds = new Set<number>();
     
     clients.forEach(c => {
@@ -182,7 +189,7 @@ export default function Clients() {
     // Format as C0001, C0002, etc.
     if (nextNumber > 9999) return 'C' + nextNumber.toString();
     return 'C' + nextNumber.toString().padStart(4, '0');
-  };
+  }, [clients]);
 
   const loadData = useCallback(async () => {
     try {
@@ -197,6 +204,7 @@ export default function Clients() {
       // Load clients
       const result = await db.getAllAsync('SELECT * FROM clients ORDER BY id ASC');
       const allClients = result as Client[];
+      console.log('Loaded clients from database:', allClients.map(c => ({ id: c.id, client_id: c.client_id, next_follow_up: c.next_follow_up })));
       setClients(allClients);
 
       // Load event types
@@ -238,12 +246,17 @@ export default function Clients() {
       console.error('Error loading clients:', error);
       if (error instanceof Error && error.message.includes('initialized')) {
         setDbReady(false);
-        setTimeout(loadData, 500);
+        // Only retry once after a short delay to prevent infinite loops
+        setTimeout(() => {
+          if (!dbReady) {
+            loadData();
+          }
+        }, 500);
       }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [dbReady]);
 
   const onSummaryDatePickerChange = (event: any, date?: Date) => {
     console.log('onSummaryDatePickerChange called', { event, date });
@@ -281,6 +294,14 @@ export default function Clients() {
     }
   }, [autoEditClientId, clients]);
 
+  // Close modal and clear autoEditClientId after successful save
+  useEffect(() => {
+    if (!modalVisible && editingClientId) {
+      // If modal is closed and we were editing, clear the editing state
+      setEditingClientId(null);
+    }
+  }, [modalVisible, editingClientId]);
+
   const processedClients = useMemo(() => {
     let result = [...clients];
 
@@ -313,12 +334,18 @@ export default function Clients() {
       );
     }
 
-    // Apply filters
-    if (filters.startDate) {
-      result = result.filter(c => c.event_date >= filters.startDate);
-    }
-    if (filters.endDate) {
-      result = result.filter(c => c.event_date <= filters.endDate);
+    // Apply date filters based on selection mode
+    if (filters.dateSelectionMode === 'one_day' && filters.startDate) {
+      result = result.filter(c => c.event_date === filters.startDate);
+    } else if (filters.dateSelectionMode === 'multiple' && filters.selectedDates.length > 0) {
+      result = result.filter(c => filters.selectedDates.includes(c.event_date));
+    } else if (filters.dateSelectionMode === 'range') {
+      if (filters.startDate) {
+        result = result.filter(c => c.event_date >= filters.startDate);
+      }
+      if (filters.endDate) {
+        result = result.filter(c => c.event_date <= filters.endDate);
+      }
     }
     if (filters.status !== 'all') {
       result = result.filter(c => (c.status || 'booked').toLowerCase() === filters.status.toLowerCase());
@@ -354,14 +381,25 @@ export default function Clients() {
 
     // sequencing is handled by FlatList index when rendering; we keep db ids untouched
     return result;
-  }, [clients, searchQuery, sortBy, activeSummaryType, summaryDates]);
+  }, [clients, searchQuery, sortBy, activeSummaryType, summaryDates, filters]);
 
   const isAnyFilterActive = useMemo(() => {
     return filters.startDate !== '' || filters.endDate !== '' || filters.status !== 'all' || filters.event_type !== 'all' || filters.lead_source !== 'all' || filters.company_name !== '' || filters.minPrice !== '' || filters.maxPrice !== '' || activeSummaryType !== null;
   }, [filters, activeSummaryType]);
 
   const clearFilters = () => {
-    setFilters({ startDate: '', endDate: '', status: 'all', event_type: 'all', lead_source: 'all', company_name: '', minPrice: '', maxPrice: '' });
+    setFilters({ 
+      startDate: '', 
+      endDate: '', 
+      status: 'all', 
+      event_type: 'all', 
+      lead_source: 'all', 
+      company_name: '', 
+      minPrice: '', 
+      maxPrice: '',
+      dateSelectionMode: 'range',
+      selectedDates: []
+    });
     resetSummarySelection();
   };
 
@@ -432,9 +470,22 @@ export default function Clients() {
       return;
     }
 
-    if (!formData.event_date || formData.event_date.trim() === '') {
-      Alert.alert('Validation Error', 'Please enter an event date');
-      return;
+    // Validation for date selection mode
+    if (formData.dateSelectionMode === 'one_day') {
+      if (!formData.event_date || formData.event_date.trim() === '') {
+        Alert.alert('Validation Error', 'Please enter an event date');
+        return;
+      }
+    } else if (formData.dateSelectionMode === 'multiple') {
+      if (formData.event_dates.length === 0) {
+        Alert.alert('Validation Error', 'Please add at least one date for multiple date shoot');
+        return;
+      }
+    } else if (formData.dateSelectionMode === 'range') {
+      if (!formData.event_date || formData.event_date.trim() === '') {
+        Alert.alert('Validation Error', 'Please enter an event date');
+        return;
+      }
     }
 
     if (!formData.event_location || formData.event_location.trim() === '') {
@@ -461,30 +512,70 @@ export default function Clients() {
       const db = getDatabase();
       const pkgString = formData.selectedPackages.join(', ');
       const totalPrice = parseFloat(formData.total_price) || 0;
+      const eventDatesJson = formData.event_dates.length > 0 ? JSON.stringify(formData.event_dates) : null;
+      
+      // For range selection, we need to store the end date in the event_dates field
+      // as a JSON array with both start and end dates
+      let finalEventDatesJson = eventDatesJson;
+      if (formData.dateSelectionMode === 'range' && formData.event_end_date) {
+        finalEventDatesJson = JSON.stringify([formData.event_date, formData.event_end_date]);
+      }
+
+      console.log('Saving client with data:', {
+        client_id: formData.client_id,
+        name: formData.name,
+        phone: formData.phone,
+        email: formData.email,
+        company_name: formData.company_name,
+        event_type: formData.event_type,
+        event_date: formData.event_date,
+        event_dates: eventDatesJson,
+        date_selection_mode: formData.dateSelectionMode,
+        event_location: formData.event_location,
+        package_name: pkgString,
+        total_price: totalPrice,
+        lead_source: formData.lead_source,
+        next_follow_up: formData.next_follow_up,
+        notes: formData.notes,
+        status: formData.status
+      });
 
       if (editingClientId) {
+        console.log('Updating client with ID:', editingClientId);
         await db.runAsync(
-          'UPDATE clients SET client_id=?, name=?, phone=?, email=?, company_name=?, event_type=?, event_date=?, event_location=?, package_name=?, total_price=?, lead_source=?, notes=?, status=? WHERE id=?',
-          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.notes, formData.status, editingClientId]
+          'UPDATE clients SET client_id=?, name=?, phone=?, email=?, company_name=?, event_type=?, event_date=?, event_dates=?, date_selection_mode=?, event_location=?, package_name=?, total_price=?, lead_source=?, next_follow_up=?, notes=?, status=? WHERE id=?',
+          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, finalEventDatesJson, formData.dateSelectionMode, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.next_follow_up || null, formData.notes, formData.status, editingClientId]
         );
       } else {
+        console.log('Inserting new client');
         await db.runAsync(
-          'INSERT INTO clients (client_id, name, phone, email, company_name, event_type, event_date, event_location, package_name, total_price, lead_source, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.notes, formData.status]
+          'INSERT INTO clients (client_id, name, phone, email, company_name, event_type, event_date, event_dates, date_selection_mode, event_location, package_name, total_price, lead_source, next_follow_up, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, finalEventDatesJson, formData.dateSelectionMode, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.next_follow_up || null, formData.notes, formData.status]
         );
       }
       
       setModalVisible(false);
       resetForm();
-      loadData();
+      await loadData();
       Alert.alert('Success', `Client ${editingClientId ? 'updated' : 'added'} successfully`);
     } catch (error) {
       console.error('Error saving client:', error);
-      Alert.alert('Error', 'Failed to save client');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      Alert.alert('Error', `Failed to save client: ${errorMessage}`);
     }
   };
 
   const handleEdit = (client: Client) => {
+    // Parse event_dates from JSON if it exists
+    let eventDates: string[] = [];
+    try {
+      if (client.event_dates) {
+        eventDates = JSON.parse(client.event_dates);
+      }
+    } catch (e) {
+      console.warn('Error parsing event_dates:', e);
+    }
+
     setFormData({
       client_id: client.client_id || '',
       name: client.name,
@@ -493,6 +584,8 @@ export default function Clients() {
       company_name: client.company_name || '',
       event_type: client.event_type || '',
       event_date: client.event_date,
+      event_dates: eventDates,
+      dateSelectionMode: client.date_selection_mode || 'range',
       event_location: client.event_location || '',
       selectedPackages: client.package_name ? client.package_name.split(', ') : [],
       total_price: client.total_price?.toString() || '0',
@@ -515,7 +608,7 @@ export default function Clients() {
           try {
             const db = getDatabase();
             await db.runAsync('DELETE FROM clients WHERE id = ?', [id]);
-            loadData();
+            await loadData();
           } catch (error) {
             Alert.alert('Error', 'Failed to delete client');
           }
@@ -570,7 +663,7 @@ export default function Clients() {
             await db.runAsync('DELETE FROM clients WHERE id = ?', [client.id]);
 
             Alert.alert('Success', 'Client restored to leads');
-            loadData();
+            await loadData();
           } catch (e) {
             console.error('Restore failed', e);
             Alert.alert('Error', 'Failed to restore lead');
@@ -603,7 +696,7 @@ export default function Clients() {
             );
 
             Alert.alert('Success', `Payment record created: ${payment_id}`);
-            loadData();
+            await loadData();
           } catch (error) {
             console.error('Convert to payment failed', error);
             Alert.alert('Error', 'Failed to convert to payment');
@@ -620,6 +713,8 @@ export default function Clients() {
       company_name: '',
       event_type: '',
       event_date: format(new Date(), 'yyyy-MM-dd'),
+      event_dates: [],
+      dateSelectionMode: 'range',
       event_location: '',
       selectedPackages: [],
       total_price: '',
@@ -795,7 +890,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
   );
 
   const renderClientRow = ({ item: client, index }: { item: Client; index: number }) => (
-    <View key={client.id} style={[styles.tableRow, { borderBottomColor: colors.border }]}>
+    <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700', fontSize: 13 }]} numberOfLines={1}>{client.client_id || `C${(index + 1).toString().padStart(4, '0')}`}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
         <TouchableOpacity onPress={() => handleConvertToPayment(client)} style={styles.actionBtn}>
@@ -817,8 +912,56 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
       <Text style={[styles.colCompany, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.company_name || '-'}</Text>
       <Text style={[styles.colLocation, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_location || '-'}</Text>
       <Text style={[styles.colEvent, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_type || '-'}</Text>
-      <Text style={[styles.colEventDate, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.event_date ? format(parseISO(client.event_date), 'dd-MMM-yy') : '-'}</Text>
-      <Text style={[styles.colFollowUp, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.next_follow_up ? format(parseISO(client.next_follow_up), 'dd-MMM-yy') : '-'}</Text>
+      <View style={[styles.colEventDate, { alignItems: 'center', justifyContent: 'center' }]}>
+        {(() => {
+          if (client.date_selection_mode === 'range' && client.event_dates) {
+            try {
+              const dates = JSON.parse(client.event_dates);
+              if (Array.isArray(dates) && dates.length === 2) {
+                return (
+                  <Text style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
+                    {format(parseISO(dates[0]), 'dd-MMM-yy')} to {format(parseISO(dates[1]), 'dd-MMM-yy')}
+                  </Text>
+                );
+              }
+            } catch (e) {
+              console.warn('Error parsing range dates:', client.event_dates, e);
+            }
+          } else if (client.date_selection_mode === 'multiple' && client.event_dates) {
+            try {
+              const dates = JSON.parse(client.event_dates);
+              if (Array.isArray(dates) && dates.length > 0) {
+                return (
+                  <View style={{ alignItems: 'center' }}>
+                    {dates.map((date, index) => (
+                      <Text key={index} style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
+                        {format(parseISO(date), 'dd-MMM-yy')}
+                      </Text>
+                    ))}
+                  </View>
+                );
+              }
+            } catch (e) {
+              console.warn('Error parsing multiple dates:', client.event_dates, e);
+            }
+          }
+          return (
+            <Text style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
+              {client.event_date ? format(parseISO(client.event_date), 'dd-MMM-yy') : '-'}
+            </Text>
+          );
+        })()}
+      </View>
+      <Text style={[styles.colFollowUp, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>
+        {client.next_follow_up ? (() => {
+          try {
+            return format(parseISO(client.next_follow_up), 'dd-MMM-yy');
+          } catch (e) {
+            console.warn('Error parsing follow-up date:', client.next_follow_up, e);
+            return client.next_follow_up;
+          }
+        })() : '-'}
+      </Text>
       <Text style={[styles.colPackage, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.package_name || '-'}</Text>
       <Text style={[styles.colPrice, { color: colors.textSecondary, fontSize: 13, fontWeight: '600' }]} numberOfLines={1}>₹{(client.total_price || 0).toLocaleString()}</Text>
       <Text style={[styles.colSource, { color: colors.textSecondary, fontSize: 13 }]} numberOfLines={1}>{client.lead_source || '-'}</Text>
@@ -946,16 +1089,62 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
             </View>
 
             <ScrollView nestedScrollEnabled={true} style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={true}>
-              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Event Date Range</Text>
-              <View style={styles.rangeRow}>
-                <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('startDate')}>
-                  <Text style={{ color: filters.startDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.startDate || 'Start Date'}</Text>
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Date Selection Mode</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.dateSelectionMode === 'one_day' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, dateSelectionMode: 'one_day' })}>
+                  <Text style={{ color: filters.dateSelectionMode === 'one_day' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>One Day</Text>
                 </TouchableOpacity>
-                <Text style={{ color: colors.textSecondary, paddingHorizontal: 8, fontSize: 12 }}>to</Text>
-                <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('endDate')}>
-                  <Text style={{ color: filters.endDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.endDate || 'End Date'}</Text>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.dateSelectionMode === 'multiple' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, dateSelectionMode: 'multiple' })}>
+                  <Text style={{ color: filters.dateSelectionMode === 'multiple' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>Multiple</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.dateSelectionMode === 'range' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, dateSelectionMode: 'range' })}>
+                  <Text style={{ color: filters.dateSelectionMode === 'range' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>Range</Text>
                 </TouchableOpacity>
               </View>
+
+              {filters.dateSelectionMode === 'one_day' && (
+                <View style={{ marginTop: 16 }}>
+                  <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Select Date</Text>
+                  <TouchableOpacity style={[styles.input, { backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('startDate')}>
+                    <Text style={{ color: filters.startDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.startDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {filters.dateSelectionMode === 'multiple' && (
+                <View style={{ marginTop: 16 }}>
+                  <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Selected Dates</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    {filters.selectedDates.map((date, index) => (
+                      <View key={index} style={[styles.filterChip, { backgroundColor: colors.primary, borderColor: colors.primary }]}>
+                        <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{format(parseISO(date), 'dd-MMM-yy')}</Text>
+                        <TouchableOpacity onPress={() => setFilters({ ...filters, selectedDates: filters.selectedDates.filter((_, i) => i !== index) })} style={{ marginLeft: 8 }}>
+                          <Ionicons name="close-circle" size={16} color="#fff" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                  <TouchableOpacity style={[styles.input, { backgroundColor: colors.background, padding: 10, borderRadius: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]} onPress={() => setActivePicker('startDate')}>
+                    <Text style={{ color: colors.text, fontSize: 13 }}>Add Date</Text>
+                    <Ionicons name="add-circle" size={20} color={colors.primary} />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {filters.dateSelectionMode === 'range' && (
+                <View style={{ marginTop: 16 }}>
+                  <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Event Date Range</Text>
+                  <View style={styles.rangeRow}>
+                    <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('startDate')}>
+                      <Text style={{ color: filters.startDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.startDate || 'Start Date'}</Text>
+                    </TouchableOpacity>
+                    <Text style={{ color: colors.textSecondary, paddingHorizontal: 8, fontSize: 12 }}>to</Text>
+                    <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('endDate')}>
+                      <Text style={{ color: filters.endDate ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.endDate || 'End Date'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
 
               <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Client Status</Text>
               <View style={styles.filterSourceGrid}>
@@ -1088,28 +1277,107 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 </View>
 
                 <View style={styles.inputGroup}>
-                  <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date</Text>
-                  <TouchableOpacity
-                    style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
-                    onPress={() => setShowEventDatePicker(true)}
-                  >
-                    <Text style={{ color: colors.text }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd-MMM-yy') : ''}</Text>
-                    <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                  {showEventDatePicker && (
-                    <DateTimePicker
-                      value={parseISO(formData.event_date)}
-                      mode="date"
-                      display="default"
-                      onChange={(event, selectedDate) => {
-                        if (selectedDate) {
-                          setFormData({ ...formData, event_date: format(selectedDate, 'yyyy-MM-dd') });
-                        }
-                        setShowEventDatePicker(false);
-                      }}
-                    />
-                  )}
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Date Selection Mode</Text>
+                  <View style={styles.filterSourceGrid}>
+                    <TouchableOpacity style={[styles.filterChip, { backgroundColor: formData.dateSelectionMode === 'one_day' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFormData({ ...formData, dateSelectionMode: 'one_day' })}>
+                      <Text style={{ color: formData.dateSelectionMode === 'one_day' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>One Day</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.filterChip, { backgroundColor: formData.dateSelectionMode === 'multiple' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFormData({ ...formData, dateSelectionMode: 'multiple' })}>
+                      <Text style={{ color: formData.dateSelectionMode === 'multiple' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>Multiple</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.filterChip, { backgroundColor: formData.dateSelectionMode === 'range' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFormData({ ...formData, dateSelectionMode: 'range' })}>
+                      <Text style={{ color: formData.dateSelectionMode === 'range' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>Range</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
+
+                {formData.dateSelectionMode === 'one_day' && (
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date</Text>
+                    <TouchableOpacity
+                      style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                      onPress={() => setShowEventDatePicker(true)}
+                    >
+                      <Text style={{ color: colors.text }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd-MMM-yy') : ''}</Text>
+                      <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                    {showEventDatePicker && (
+                      <DateTimePicker
+                        value={parseISO(formData.event_date)}
+                        mode="date"
+                        display="default"
+                        onChange={(event, selectedDate) => {
+                          if (selectedDate) {
+                            setFormData({ ...formData, event_date: format(selectedDate, 'yyyy-MM-dd') });
+                          }
+                          setShowEventDatePicker(false);
+                        }}
+                      />
+                    )}
+                  </View>
+                )}
+
+                {formData.dateSelectionMode === 'multiple' && (
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Selected Dates</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                      {formData.event_dates.map((date, index) => (
+                        <View key={index} style={[styles.filterChip, { backgroundColor: colors.primary, borderColor: colors.primary }]}>
+                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600' }}>{format(parseISO(date), 'dd-MMM-yy')}</Text>
+                          <TouchableOpacity onPress={() => setFormData({ ...formData, event_dates: formData.event_dates.filter((_, i) => i !== index) })} style={{ marginLeft: 8 }}>
+                            <Ionicons name="close-circle" size={16} color="#fff" />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                    <TouchableOpacity style={[styles.input, { backgroundColor: colors.background, padding: 10, borderRadius: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]} onPress={() => setShowEventDatePicker(true)}>
+                      <Text style={{ color: colors.text, fontSize: 13 }}>Add Date</Text>
+                      <Ionicons name="add-circle" size={20} color={colors.primary} />
+                    </TouchableOpacity>
+                    {showEventDatePicker && (
+                      <DateTimePicker
+                        value={formData.event_date ? parseISO(formData.event_date) : new Date()}
+                        mode="date"
+                        display="default"
+                        onChange={(event, selectedDate) => {
+                          if (selectedDate) {
+                            const newDate = format(selectedDate, 'yyyy-MM-dd');
+                            if (!formData.event_dates.includes(newDate)) {
+                              setFormData({ ...formData, event_dates: [...formData.event_dates, newDate] });
+                            }
+                          }
+                          setShowEventDatePicker(false);
+                        }}
+                      />
+                    )}
+                  </View>
+                )}
+
+                {formData.dateSelectionMode === 'range' && (
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Event Date Range</Text>
+                    <View style={styles.rangeRow}>
+                      <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('startDate')}>
+                        <Text style={{ color: formData.event_date ? colors.text : colors.textTertiary, fontSize: 13 }}>{formData.event_date ? format(parseISO(formData.event_date), 'dd-MMM-yy') : 'Start Date'}</Text>
+                      </TouchableOpacity>
+                      <Text style={{ color: colors.textSecondary, paddingHorizontal: 8, fontSize: 12 }}>to</Text>
+                      <TouchableOpacity style={[styles.input, { flex: 1, backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setActivePicker('endDate')}>
+                        <Text style={{ color: formData.event_end_date ? colors.text : colors.textTertiary, fontSize: 13 }}>{formData.event_end_date ? format(parseISO(formData.event_end_date), 'dd-MMM-yy') : 'End Date'}</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {activePicker && <DateTimePicker value={activePicker === 'startDate' ? (formData.event_date ? parseISO(formData.event_date) : new Date()) : (formData.event_end_date ? parseISO(formData.event_end_date) : new Date())} mode="date" onChange={(event, selectedDate) => {
+                      if (selectedDate) {
+                        const formattedDate = format(selectedDate, 'yyyy-MM-dd');
+                        if (activePicker === 'startDate') {
+                          setFormData({ ...formData, event_date: formattedDate });
+                        } else {
+                          setFormData({ ...formData, event_end_date: formattedDate });
+                        }
+                      }
+                      setActivePicker(null);
+                    }} />}
+                  </View>
+                )}
 
                 <View style={styles.inputGroup}>
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Event Location</Text>
@@ -1265,6 +1533,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 <DetailRow label="Package" value={selectedClientForDetail?.package_name} icon="bag-outline" /> 
                 <DetailRow label="Total Price" value={selectedClientForDetail?.total_price ? `₹${selectedClientForDetail.total_price.toLocaleString()}` : undefined} icon="cash-outline" /> 
                 <DetailRow label="Lead Source" value={selectedClientForDetail?.lead_source} icon="share-social-outline" /> 
+                <DetailRow label="Next Follow Up" value={selectedClientForDetail?.next_follow_up} icon="calendar-outline" /> 
                 <DetailRow label="Status" value={selectedClientForDetail?.status} icon="checkmark-done-outline" /> 
                 <DetailRow label="Notes" value={selectedClientForDetail?.notes} icon="document-text-outline" /> 
                 <TouchableOpacity 
@@ -1524,21 +1793,21 @@ const styles = StyleSheet.create({
   columnHeader: { fontSize: 12, fontWeight: '800', letterSpacing: 0.5, textAlign: 'center', textTransform: 'uppercase' },
   tableRow: { flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, alignItems: 'center', gap: 20 },
 
-  colId: { width: 65, textAlign: 'center' },
-  colActions: { width: 160, alignItems: 'center', justifyContent: 'center', marginHorizontal: 8 },
-  colDate: { width: 95, textAlign: 'center' },
-  colName: { width: 125, textAlign: 'center' },
-  colPhone: { width: 115, textAlign: 'center' },
-  colCompany: { width: 120, textAlign: 'center' },
-  colLocation: { width: 120, textAlign: 'center' },
-  colEvent: { width: 110, textAlign: 'center' },
-  colEventDate: { width: 110, textAlign: 'center' },
-  colFollowUp: { width: 110, textAlign: 'center' },
-  colPackage: { width: 130, textAlign: 'center' },
-  colPrice: { width: 100, textAlign: 'center' },
-  colSource: { width: 110, textAlign: 'center' },
-  colStatus: { width: 95, textAlign: 'center' },
-  colNotes: { width: 135, textAlign: 'center' },
+  colId: { width: 80, textAlign: 'center' },
+  colActions: { width: 180, alignItems: 'center', justifyContent: 'center', marginHorizontal: 8 },
+  colDate: { width: 110, textAlign: 'center' },
+  colName: { width: 160, textAlign: 'center' },
+  colPhone: { width: 130, textAlign: 'center' },
+  colCompany: { width: 140, textAlign: 'center' },
+  colLocation: { width: 140, textAlign: 'center' },
+  colEvent: { width: 120, textAlign: 'center' },
+  colEventDate: { width: 160, textAlign: 'center' },
+  colFollowUp: { width: 120, textAlign: 'center' },
+  colPackage: { width: 160, textAlign: 'center' },
+  colPrice: { width: 120, textAlign: 'center' },
+  colSource: { width: 130, textAlign: 'center' },
+  colStatus: { width: 110, textAlign: 'center' },
+  colNotes: { width: 160, textAlign: 'center' },
 
   rowActions: { flexDirection: 'row', gap: 12, alignItems: 'center', justifyContent: 'center' },
   actionBtn: { padding: 8, borderRadius: 6, marginHorizontal: 2 },

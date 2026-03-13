@@ -21,7 +21,7 @@ import { Image } from 'expo-image';
 
 interface TimelineItem {
   id: number;
-  type: 'shoot' | 'payment' | 'lead';
+  type: 'shoot' | 'payment' | 'lead' | 'client';
   title: string;
   subtitle: string;
   date: Date;
@@ -59,6 +59,10 @@ export default function Dashboard() {
     todaysFollowUps: [] as any[],
     todaysClientFollowUps: [] as any[],
     todaysPayments: [] as any[],
+    overdueShoots: [] as any[],
+    overdueLeads: [] as any[],
+    overdueClientFollowUps: [] as any[],
+    overduePayments: [] as any[],
   });
   const [timelineData, setTimelineData] = useState<TimelineItem[]>([]);
   const [recentPortfolio, setRecentPortfolio] = useState<PortfolioImage[]>([]);
@@ -124,10 +128,28 @@ export default function Dashboard() {
          WHERE date(shoots.shoot_date) = date('now')`
       );
 
+      // Load Overdue Shoots (missed shoots)
+      const overdueShootsResult: any = await db.getAllAsync(
+        `SELECT shoots.*, clients.name as client_name
+         FROM shoots
+         LEFT JOIN clients ON shoots.client_id = clients.id
+         WHERE date(shoots.shoot_date) < date('now') AND shoots.status != 'completed'
+         ORDER BY shoots.shoot_date DESC
+         LIMIT 4`
+      );
+
       // Load Today's Follow Ups
       const todayFollowUpsResult: any = await db.getAllAsync(
         `SELECT * FROM leads
          WHERE date(next_follow_up) = date('now')`
+      );
+
+      // Load Overdue Leads (missed follow-ups)
+      const overdueLeadsResult: any = await db.getAllAsync(
+        `SELECT * FROM leads
+         WHERE date(next_follow_up) < date('now')
+         ORDER BY next_follow_up DESC
+         LIMIT 4`
       );
 
       // Load Today's Client Follow Ups
@@ -137,12 +159,31 @@ export default function Dashboard() {
          WHERE date(next_follow_up) = date('now')`
       );
 
+      // Load Overdue Client Follow-ups
+      const overdueClientFollowUpsResult: any = await db.getAllAsync(
+        `SELECT clients.*, clients.name as client_name
+         FROM clients
+         WHERE date(next_follow_up) < date('now')
+         ORDER BY next_follow_up DESC
+         LIMIT 4`
+      );
+
       // Load Today's Payments
       const todayPaymentsResult: any = await db.getAllAsync(
         `SELECT payments.*, clients.name as client_name
          FROM payments
          LEFT JOIN clients ON payments.client_id = clients.id
          WHERE date(payments.payment_date) = date('now') AND payments.status != 'paid'`
+      );
+
+      // Load Overdue Payments
+      const overduePaymentsResult: any = await db.getAllAsync(
+        `SELECT payments.*, clients.name as client_name
+         FROM payments
+         LEFT JOIN clients ON payments.client_id = clients.id
+         WHERE date(payments.payment_date) < date('now') AND payments.status != 'paid'
+         ORDER BY payments.payment_date DESC
+         LIMIT 4`
       );
       
       const revenue = revenueResult[0]?.total || 0;
@@ -161,6 +202,10 @@ export default function Dashboard() {
         todaysFollowUps: todayFollowUpsResult || [],
         todaysClientFollowUps: todayClientFollowUpsResult || [],
         todaysPayments: todayPaymentsResult || [],
+        overdueShoots: overdueShootsResult || [],
+        overdueLeads: overdueLeadsResult || [],
+        overdueClientFollowUps: overdueClientFollowUpsResult || [],
+        overduePayments: overduePaymentsResult || [],
       });
 
       // Load Timeline
@@ -224,6 +269,35 @@ export default function Dashboard() {
             status: 'pending',
           });
         } catch (e) {}
+      });
+
+      // Load Client Follow Ups for Timeline
+      const upcomingClientFollowUps: any = await db.getAllAsync(
+        `SELECT * FROM clients
+         WHERE next_follow_up IS NOT NULL AND next_follow_up >= date('now')
+         ORDER BY next_follow_up ASC LIMIT 10`
+      );
+
+      console.log('Client follow-ups data:', upcomingClientFollowUps);
+      console.log('Stats todaysClientFollowUps:', stats.todaysClientFollowUps);
+
+      upcomingClientFollowUps.forEach((c: any) => {
+        try {
+          console.log('Processing client follow-up:', c);
+          const followUpDate = new Date(c.next_follow_up);
+          console.log('Parsed date:', followUpDate, 'ISO:', followUpDate.toISOString());
+          
+          timeline.push({
+            id: c.id,
+            type: 'client',
+            title: `Client Follow Up - ${c.name}`,
+            subtitle: c.event_type || 'Client',
+            date: followUpDate,
+            status: 'pending',
+          });
+        } catch (e) {
+          console.error('Error processing client follow-up:', e, c);
+        }
       });
 
       setTimelineData(timeline.sort((a, b) => a.date.getTime() - b.date.getTime()));
@@ -340,6 +414,9 @@ export default function Dashboard() {
     } else if (item.type === 'lead') {
       iconName = 'call';
       iconColor = colors.info;
+    } else if (item.type === 'client') {
+      iconName = 'person-circle';
+      iconColor = colors.success;
     }
 
     return (
@@ -590,9 +667,9 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240 }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="cafe-outline" size={24} color={colors.textTertiary} />
-                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8 }}>Free Day</Text>
+                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>Free Day</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No shoots today</Text>
                   </View>
                 )}
@@ -609,7 +686,7 @@ export default function Dashboard() {
                       />
                     ))
                   ) : (
-                    <View style={{ flex: 1, justifyContent: 'flex-end', alignItems: 'center', padding: 75 }}>
+                    <View style={{ flex: 1, justifyContent: 'flex-end', alignItems: 'center', padding: 20 }}>
                       <View style={[styles.emptyState, { backgroundColor: 'transparent' }]}>
                         <Ionicons name="calendar-clear-outline" size={30} color={colors.textTertiary} />
                         <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming events</Text>
@@ -699,15 +776,15 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240 }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="notifications-off-outline" size={24} color={colors.textTertiary} />
-                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8 }}>All Caught Up</Text>
+                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>All Caught Up</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No follow-ups today</Text>
                   </View>
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 70, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 20, height: 240 }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'lead').length > 0 ? (
                     timelineData.filter(i => i.type === 'lead').map((item, index, arr) => (
@@ -806,20 +883,30 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240 }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="checkmark-circle-outline" size={24} color={colors.textTertiary} />
-                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8 }}>All Followed Up</Text>
+                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>All Followed Up</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No client follow-ups today</Text>
                   </View>
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 70, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 20, height: 240 }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
-                  <View style={styles.emptyStateContainer}>
-                    <Ionicons name="call-outline" size={30} color={colors.textTertiary} />
-                    <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming client follow-ups</Text>
-                  </View>
+                  {timelineData.filter(i => i.type === 'client').length > 0 ? (
+                    timelineData.filter(i => i.type === 'client').map((item, index, arr) => (
+                      <TimelineRow
+                        key={`${item.type}-${item.id}`}
+                        item={item}
+                        isLast={index === arr.length - 1}
+                      />
+                    ))
+                  ) : (
+                    <View style={styles.emptyStateContainer}>
+                      <Ionicons name="call-outline" size={30} color={colors.textTertiary} />
+                      <Text style={[styles.emptyStateText, { color: colors.textSecondary, fontSize: 12, textAlign: 'center' }]}>No upcoming client follow-ups</Text>
+                    </View>
+                  )}
                 </ScrollView>
               </View>
             </View>
@@ -903,15 +990,15 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240 }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="cash-outline" size={24} color={colors.textTertiary} />
-                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8 }}>No Payments Due</Text>
+                     <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>No Payments Due</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No payments due today</Text>
                   </View>
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 70, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 20, height: 240 }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'payment').length > 0 ? (
                     timelineData.filter(i => i.type === 'payment').map((item, index, arr) => (
@@ -928,6 +1015,73 @@ export default function Dashboard() {
                     </View>
                   )}
                 </ScrollView>
+              </View>
+            </View>
+          </View>
+
+          {/* Overdue Items Section - NEW STANDALONE SECTION */}
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Overdue Items</Text>
+
+            <View style={styles.overdueGrid}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.primary + '15', borderColor: colors.primary + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                    <LinearGradient
+                      colors={[colors.primary, colors.primaryGradientEnd]}
+                      style={styles.todayShootIconSmall}
+                    >
+                      <Ionicons name="camera" size={24} color="#fff" />
+                    </LinearGradient>
+                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Shoots</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overdueShoots.length} items</Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.info + '15', borderColor: colors.info + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                    <LinearGradient
+                      colors={[colors.info, '#0ea5e9']}
+                      style={styles.todayShootIconSmall}
+                    >
+                      <Ionicons name="call" size={24} color="#fff" />
+                    </LinearGradient>
+                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Leads</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overdueLeads.length} items</Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.success + '15', borderColor: colors.success + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                    <LinearGradient
+                      colors={[colors.success, '#16a34a']}
+                      style={styles.todayShootIconSmall}
+                    >
+                      <Ionicons name="person-circle" size={24} color="#fff" />
+                    </LinearGradient>
+                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Clients</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overdueClientFollowUps.length} items</Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.accent + '15', borderColor: colors.accent + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                    <LinearGradient
+                      colors={[colors.accent, '#f59e0b']}
+                      style={styles.todayShootIconSmall}
+                    >
+                      <Ionicons name="cash" size={24} color="#fff" />
+                    </LinearGradient>
+                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Payments</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overduePayments.length} items</Text>
+                  </View>
+                </View>
               </View>
             </View>
           </View>
@@ -1400,6 +1554,41 @@ const styles = StyleSheet.create({
   },
   portfolioFrameOverlay: {
     ...StyleSheet.absoluteFillObject,
+  },
+  shootFrameInfo: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 12,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  shootFrameTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 2,
+  },
+  shootFrameClient: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#fff',
+    opacity: 0.8,
+  },
+  overdueIconContainer: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -10 }, { translateY: -10 }],
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  overdueGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
   },
   emptyStateContainer: {
     flex: 1,

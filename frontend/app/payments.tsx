@@ -35,6 +35,7 @@ interface Payment {
   paid_amount: number;
   balance: number;
   payment_date: string;
+  due_date?: string;
   status: string;
   payment_method: string;
   receipt_path?: string;

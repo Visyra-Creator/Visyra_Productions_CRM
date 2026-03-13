@@ -39,6 +39,8 @@ export const initDatabase = async () => {
           company_name TEXT,
           event_type TEXT,
           event_date TEXT,
+          event_dates TEXT, -- JSON array of dates for multiple date shoots
+          date_selection_mode TEXT DEFAULT 'range',
           event_location TEXT,
           package_name TEXT,
           total_price REAL DEFAULT 0,
@@ -269,6 +271,8 @@ export const initDatabase = async () => {
       // Client migrations
       await ensureColumn('clients', 'company_name', 'TEXT');
       await ensureColumn('clients', 'next_follow_up', 'TEXT');
+      await ensureColumn('clients', 'event_dates', 'TEXT');
+      await ensureColumn('clients', 'date_selection_mode', "TEXT DEFAULT 'range'");
 
       const seedOptions = async (type: string, labels: string[]) => {
         try {
