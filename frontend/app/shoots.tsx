@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,9 +17,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
-import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, startOfWeek, endOfWeek, isToday } from 'date-fns';
+import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, startOfWeek, endOfWeek, isToday, isSameDay, isSameWeek, addDays, subDays, addWeeks, subWeeks, startOfDay, endOfDay, isWithinInterval, setHours, setMinutes } from 'date-fns';
 import { LinearGradient } from 'expo-linear-gradient';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { useLocalSearchParams } from 'expo-router';
 
 interface Shoot {
   id: number;
@@ -47,6 +48,7 @@ const STATUS_OPTIONS = [
 export default function Shoots() {
   const { colors } = useThemeStore();
   const { width: screenWidth } = useWindowDimensions();
+  const params = useLocalSearchParams();
   const [shoots, setShoots] = useState<Shoot[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [eventTypes, setEventTypes] = useState<AppOption[]>([]);
@@ -54,11 +56,16 @@ export default function Shoots() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingShoot, setEditingShoot] = useState<Shoot | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'calendar'>('table');
+  const [calendarView, setCalendarView] = useState<'week' | 'month'>('week');
+  const [selectedDate, setSelectedDate] = useState(new Date());
   const [statusPickerVisible, setStatusPickerVisible] = useState(false);
   const [clientPickerVisible, setClientPickerVisible] = useState(false);
   const [eventTypePickerVisible, setEventTypePickerVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  // Ref to track if navigation parameters have been processed
+  const navigationParamsProcessed = useRef(false);
 
   // Date/Time Picker State
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -104,6 +111,63 @@ export default function Shoots() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Auto-fill form from client navigation params
+  useEffect(() => {
+    // Check if navigation parameters have already been processed
+    if (navigationParamsProcessed.current) {
+      return;
+    }
+
+    // Handle autoEditShootId parameter for editing existing shoots
+    if (params?.autoEditShootId && shoots.length > 0) {
+      const shootId = parseInt(params.autoEditShootId as string);
+      const shootToEdit = shoots.find(s => s.id === shootId);
+      
+      if (shootToEdit) {
+        setEditingShoot(shootToEdit);
+        setFormData({
+          client_id: shootToEdit.client_id.toString(),
+          client_name: shootToEdit.client_name || '',
+          event_type: shootToEdit.event_type,
+          shoot_date: parseISO(shootToEdit.shoot_date),
+          start_time: new Date(), // Time parsing is complex, defaulting or simplified here
+          end_time: shootToEdit.end_time ? new Date() : null,
+          location: shootToEdit.location,
+          notes: shootToEdit.notes,
+          status: shootToEdit.status
+        });
+        setModalVisible(true);
+        navigationParamsProcessed.current = true;
+      }
+    }
+    // Handle autoFillClientId parameter for creating new shoots from clients
+    else if (params?.autoFillClientId && clients.length > 0) {
+      const clientId = params.autoFillClientId as string;
+      const clientName = params.autoFillClientName as string || '';
+      const eventType = params.autoFillEventType as string || '';
+      const eventDate = params.autoFillEventDate as string || '';
+      const location = params.autoFillLocation as string || '';
+
+      // Only update form if we have valid data and modal is not already visible
+      if (!modalVisible) {
+        setFormData(prev => ({
+          ...prev,
+          client_id: clientId,
+          client_name: clientName,
+          event_type: eventType,
+          shoot_date: eventDate ? parseISO(eventDate) : new Date(),
+          start_time: new Date(),
+          end_time: null,
+          location: location,
+          notes: '',
+          status: 'upcoming'
+        }));
+        setModalVisible(true);
+        navigationParamsProcessed.current = true;
+      }
+    }
+  }, [params?.autoEditShootId, params?.autoFillClientId, params?.autoFillClientName, params?.autoFillEventType, params?.autoFillEventDate, params?.autoFillLocation, clients.length, shoots.length]);
 
   const stats = useMemo(() => {
     const total = shoots.length;
@@ -173,6 +237,8 @@ export default function Shoots() {
               await db.runAsync('DELETE FROM shoots WHERE id = ?', [id]);
               loadData();
               Alert.alert('Success', 'Shoot deleted successfully');
+              // Close modal after deletion to prevent reappearing
+              setModalVisible(false);
             } catch (error) {
               console.error(error);
               Alert.alert('Error', 'Failed to delete shoot');
@@ -222,6 +288,19 @@ export default function Shoots() {
         );
         Alert.alert('Success', 'Shoot scheduled successfully');
       }
+      // Reset form state after successful save
+      setFormData({
+        client_id: '',
+        client_name: '',
+        event_type: '',
+        shoot_date: new Date(),
+        start_time: new Date(),
+        end_time: null,
+        location: '',
+        notes: '',
+        status: 'upcoming'
+      });
+      setEditingShoot(null);
       setModalVisible(false);
       loadData();
     } catch (error) {
@@ -284,7 +363,9 @@ export default function Shoots() {
               </View>
               <View>
                 <Text style={[styles.detailLabel, { color: colors.textTertiary }]}>TIME</Text>
-                <Text style={[styles.cardDetailText, { color: colors.textSecondary }]}>{item.start_time}</Text>
+                <Text style={[styles.cardDetailText, { color: colors.textSecondary }]}>
+                  {item.start_time}{item.end_time ? ` - ${item.end_time}` : ''}
+                </Text>
               </View>
             </View>
           </View>
@@ -548,7 +629,15 @@ export default function Shoots() {
                     <Text style={[styles.label, { color: colors.textSecondary }]}>End Time (Opt)</Text>
                     <TouchableOpacity
                       style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
-                      onPress={() => setShowEndTimePicker(true)}
+                      onPress={() => {
+                        // Only set a default time if no end time is set yet
+                        if (!formData.end_time) {
+                          const defaultEndTime = new Date(formData.start_time);
+                          defaultEndTime.setHours(defaultEndTime.getHours() + 1); // Default to 1 hour after start time
+                          setFormData({...formData, end_time: defaultEndTime});
+                        }
+                        setShowEndTimePicker(true);
+                      }}
                     >
                       <Text style={{ color: formData.end_time ? colors.text : colors.textTertiary }}>
                         {formData.end_time ? format(formData.end_time, 'hh:mm a') : '--:-- --'}
