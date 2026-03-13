@@ -112,6 +112,7 @@ export default function Leads() {
   const [showFollowUpPicker, setShowFollowUpPicker] = useState(false);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
   const [selectedLeadForDetail, setSelectedLeadForDetail] = useState<Lead | null>(null);
+  const [dropdownVisible, setDropdownVisible] = useState(false);
 
   // Summary Filter State
   const [summaryDates, setSummaryDates] = useState({
@@ -175,11 +176,17 @@ export default function Leads() {
   const [activePicker, setActivePicker] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
+    lead_id: '',
     name: '',
     company_name: '',
     phone: '',
     email: '',
     source: '',
+    event_type: '',
+    event_location: '',
+    package_name: '',
+    total_price: '',
+    status: 'new',
     stage: 'new',
     event_date: format(new Date(), 'yyyy-MM-dd'),
     next_follow_up: '',
@@ -620,7 +627,7 @@ export default function Leads() {
       const result = await DocumentPicker.getDocumentAsync({ type: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'] });
       if (result.canceled) return;
       const fileUri = result.assets[0].uri;
-      const fileContent = await FileSystem.readAsStringAsync(fileUri, { encoding: FileSystem.EncodingType.Base64 });
+          const fileContent = await FileSystem.readAsStringAsync(fileUri, { encoding: 'base64' });
       const workbook = XLSX.read(fileContent, { type: 'base64' });
       const data: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
       const db = getDatabase();
@@ -890,10 +897,15 @@ export default function Leads() {
       </TouchableOpacity>
       <Text style={[styles.colId, { color: colors.primary, fontWeight: '700' }]}>{lead.lead_id || '-'}</Text>
       <View style={[styles.colActions, styles.rowActions]}>
-        <TouchableOpacity onPress={() => handleConvertSingleLead(lead)} style={styles.actionBtn}><Ionicons name="arrow-forward-outline" size={20} color={colors.success} /></TouchableOpacity>
-        <TouchableOpacity onPress={() => { setSelectedLeadForDetail(lead); setIsDetailModalVisible(true); }} style={styles.actionBtn}><Ionicons name="eye-outline" size={20} color={colors.info} /></TouchableOpacity>
-        <TouchableOpacity onPress={() => handleEdit(lead)} style={styles.actionBtn}><Ionicons name="create-outline" size={20} color={colors.primary} /></TouchableOpacity>
-        <TouchableOpacity onPress={() => handleDelete(lead.id)} style={styles.actionBtn}><Ionicons name="trash-outline" size={20} color={colors.error} /></TouchableOpacity>
+        <TouchableOpacity 
+          onPress={() => {
+            setSelectedLeadForDetail(lead);
+            setDropdownVisible(true);
+          }}
+          style={styles.actionBtn}
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.textSecondary} />
+        </TouchableOpacity>
       </View>
       {/* convert icon moved inside actions, no separate column any more */}
       <Text style={[styles.colDate, { color: colors.textSecondary }]}>{lead.event_date ? format(parseISO(lead.event_date), 'dd-MMM-yy') : '-'}</Text>
@@ -1320,6 +1332,71 @@ export default function Leads() {
         </TouchableOpacity>
       </Modal>
 
+      {/* Lead Dropdown Modal */}
+      <Modal visible={dropdownVisible} transparent animationType="fade" onRequestClose={() => setDropdownVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setDropdownVisible(false)}>
+          <View style={[styles.dropdownContainer, { backgroundColor: colors.surface }]}>
+            <View style={styles.dropdownHeader}>
+              <Text style={[styles.dropdownTitle, { color: colors.text }]}>Actions</Text>
+              <TouchableOpacity onPress={() => setDropdownVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.dropdownActions}>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (selectedLeadForDetail) {
+                    handleConvertSingleLead(selectedLeadForDetail);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="person-add" size={24} color={colors.success} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Convert to Client</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (selectedLeadForDetail) {
+                    setSelectedLeadForDetail(selectedLeadForDetail);
+                    setIsDetailModalVisible(true);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="eye-outline" size={24} color={colors.info} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>View Details</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (selectedLeadForDetail) {
+                    handleEdit(selectedLeadForDetail);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="create-outline" size={24} color={colors.primary} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Edit Lead</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (selectedLeadForDetail) {
+                    handleDelete(selectedLeadForDetail.id);
+                    setDropdownVisible(false);
+                  }
+                }}
+              >
+                <Ionicons name="trash-outline" size={24} color={colors.error} />
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Delete Lead</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Lead Detail Modal */}
       <Modal visible={isDetailModalVisible} animationType="fade" transparent={true} onRequestClose={() => setIsDetailModalVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setIsDetailModalVisible(false)}>
@@ -1460,4 +1537,12 @@ const styles = StyleSheet.create({
   detailTextContainer: { flex: 1 },
   detailLabel: { fontSize: 12, fontWeight: '600', marginBottom: 2 },
   detailValue: { fontSize: 16, fontWeight: '600' },
+
+  // Dropdown styles
+  dropdownContainer: { width: '80%', borderRadius: 20, overflow: 'hidden', elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
+  dropdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
+  dropdownTitle: { fontSize: 18, fontWeight: '700' },
+  dropdownActions: { paddingVertical: 8 },
+  dropdownAction: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1 },
+  dropdownActionText: { fontSize: 16, fontWeight: '600', marginLeft: 16 },
 });
