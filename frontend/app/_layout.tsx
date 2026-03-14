@@ -148,6 +148,12 @@ export default function RootLayout() {
                 {isClientsPage && (
                   <>
                     <TouchableOpacity
+                      onPress={() => router.push('/shoots')}
+                      style={{ marginRight: 8, padding: 8 }}
+                    >
+                      <Ionicons name="camera-outline" size={24} color={colors.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       onPress={() => router.push('/payments')}
                       style={{ marginRight: 8, padding: 8 }}
                     >

@@ -516,7 +516,12 @@ export default function Shoots() {
                               />
                               <Text numberOfLines={1} style={[styles.cellShootTitle, { color: colors.text }]}>{shoot.client_name}</Text>
                           </View>
-                          <Text numberOfLines={1} style={[styles.cellShootTime, { color: colors.textTertiary }]}>{shoot.start_time?.split(' ')[0]}</Text>
+                          <Text numberOfLines={1} style={[styles.cellShootTime, { color: colors.textTertiary }]}>
+                            {shoot.start_time && shoot.end_time 
+                              ? `${shoot.start_time} - ${shoot.end_time}`
+                              : shoot.start_time || 'Time not set'
+                            }
+                          </Text>
                         </View>
                       ))}
                       {dayShoots.length > 3 && (

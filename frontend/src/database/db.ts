@@ -86,6 +86,17 @@ export const initDatabase = async () => {
           FOREIGN KEY (shoot_id) REFERENCES shoots (id)
         );
 
+        CREATE TABLE IF NOT EXISTS payment_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          invoice_id INTEGER NOT NULL,
+          amount REAL NOT NULL,
+          payment_date TEXT NOT NULL,
+          payment_method TEXT,
+          notes TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (invoice_id) REFERENCES payments (id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS packages (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
