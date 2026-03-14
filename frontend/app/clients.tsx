@@ -632,6 +632,43 @@ export default function Clients() {
     });
   };
 
+  const handlePayments = async (client: Client) => {
+    try {
+      const db = getDatabase();
+      if (!db) return;
+
+      // Check if client has any existing payments
+      const existingPayments: any[] = await db.getAllAsync(
+        'SELECT id FROM payments WHERE client_id = ? ORDER BY id DESC LIMIT 1',
+        [client.id]
+      );
+
+      if (existingPayments.length > 0) {
+        // If payment exists, navigate to edit that payment
+        router.push({
+          pathname: '/payments',
+          params: {
+            autoEditPaymentId: existingPayments[0].id.toString()
+          }
+        });
+      } else {
+        // If no payment exists, navigate with auto-fill parameters for new payment
+        router.push({
+          pathname: '/payments',
+          params: {
+            autoFillClientId: client.id.toString(),
+            autoFillClientName: client.name,
+            autoFillTotalPrice: client.total_price?.toString() || '0',
+            autoFillEventType: client.event_type || ''
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error handling payments:', error);
+      Alert.alert('Error', 'Failed to navigate to payments');
+    }
+  };
+
   const handleRestore = (client: Client) => {
     Alert.alert('Restore Lead', 'Copy this client back to leads?', [
       { text: 'Cancel', style: 'cancel' },
@@ -1809,13 +1846,13 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
                 onPress={() => {
                   if (dropdownClient) {
-                    handleConvertToPayment(dropdownClient);
+                    handlePayments(dropdownClient);
                     setDropdownVisible(false);
                   }
                 }}
               >
                 <Ionicons name="card-outline" size={24} color={colors.success} />
-                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Convert to Payment</Text>
+                <Text style={[styles.dropdownActionText, { color: colors.text }]}>Payments</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.dropdownAction, { borderBottomColor: colors.border }]}
