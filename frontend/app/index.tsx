@@ -529,7 +529,7 @@ export default function Dashboard() {
             <View style={styles.statsGrid}>
               <StatCard
                 icon="camera"
-                title="Upcoming Shoots"
+                title="Total Shoots"
                 value={stats.upcomingShoots}
                 gradientColors={[colors.primaryGradientStart, colors.primaryGradientEnd]}
                 onPress={() => router.push('/shoots')}

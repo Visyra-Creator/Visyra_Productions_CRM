@@ -1052,6 +1052,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           <Ionicons name="swap-vertical" size={20} color={colors.primary} />
         </TouchableOpacity>
 
+
         <TouchableOpacity
           style={[styles.iconButton, { backgroundColor: isAnyFilterActive ? colors.primary : colors.surface }]}
           onPress={() => setIsFilterModalVisible(true)}
