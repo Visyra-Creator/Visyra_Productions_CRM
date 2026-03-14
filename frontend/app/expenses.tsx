@@ -18,6 +18,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
+import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, startOfMonth, endOfMonth, isWithinInterval, startOfYear, endOfYear } from 'date-fns';
 
 interface AppOption {
@@ -37,8 +38,38 @@ export default function Expenses() {
   const [isCalcVisible, setIsCalcVisible] = useState(false);
   const [calcDisplay, setCalcDisplay] = useState('0');
   const [searchQuery, setSearchQuery] = useState('');
+  const [editingExpense, setEditingExpense] = useState<any | null>(null);
+
+  // auto-generate next expense_id based on existing expenses
+  // new format: E followed by four digits (e.g. E0001)
+  // Fills gaps first - if E0001 is deleted, next new expense gets E0001
+  const getNextExpenseId = useCallback(() => {
+    const existingIds = new Set<number>();
+    
+    expenses.forEach(e => {
+      if (e.expense_id) {
+        // strip non-digits, then parse
+        const digits = e.expense_id.replace(/\D/g, '');
+        const n = parseInt(digits, 10);
+        if (!isNaN(n)) {
+          existingIds.add(n);
+        }
+      }
+    });
+
+    // Find the first missing number starting from 1
+    let nextNumber = 1;
+    while (existingIds.has(nextNumber)) {
+      nextNumber++;
+    }
+
+    // Format as E0001, E0002, etc.
+    if (nextNumber > 9999) return 'E' + nextNumber.toString();
+    return 'E' + nextNumber.toString().padStart(4, '0');
+  }, [expenses]);
 
   const [formData, setFormData] = useState({
+    expense_id: getNextExpenseId(),
     title: '',
     amount: '',
     category: 'Other',
@@ -95,6 +126,27 @@ export default function Expenses() {
     );
   }, [expenses, searchQuery]);
 
+  const [invoices, setInvoices] = useState<any[]>([]);
+  const [paymentRecords, setPaymentRecords] = useState<any[]>([]);
+
+  const loadPaymentsData = useCallback(async () => {
+    try {
+      const db = getDatabase();
+      const [invResult, prResult] = await Promise.all([
+        db.getAllAsync('SELECT * FROM payments'),
+        db.getAllAsync('SELECT * FROM payment_records')
+      ]);
+      setInvoices(invResult as any[]);
+      setPaymentRecords(prResult as any[]);
+    } catch (error) {
+      console.error('Error loading payments data:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPaymentsData();
+  }, [loadPaymentsData]);
+
   const stats = useMemo(() => {
     const now = new Date();
     const total = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
@@ -123,8 +175,14 @@ export default function Expenses() {
 
     const projected = Math.round(thisMonth * 1.15);
 
-    return { total, thisMonth, thisYear, operational, projected };
-  }, [expenses]);
+    // Calculate total income from payments
+    const totalIncome = paymentRecords.reduce((sum, pr) => sum + (pr.amount || 0), 0);
+
+    // Calculate profit
+    const profit = totalIncome - total;
+
+    return { total, thisMonth, thisYear, operational, projected, totalIncome, profit };
+  }, [expenses, invoices, paymentRecords]);
 
   const handleAddExpense = async () => {
     if (!formData.title || !formData.amount) {
@@ -134,23 +192,35 @@ export default function Expenses() {
 
     try {
       const db = getDatabase();
-      await db.runAsync(
-        'INSERT INTO expenses (title, amount, category, paid_to, payment_method, status, date, notes, shoot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [formData.title, parseFloat(formData.amount), formData.category, formData.paid_to, formData.payment_method, formData.status, formData.date, formData.notes, formData.shoot_id]
-      );
+      
+      if (editingExpense) {
+        // Update existing expense
+        await db.runAsync(
+          'UPDATE expenses SET title = ?, amount = ?, category = ?, paid_to = ?, payment_method = ?, status = ?, date = ?, notes = ?, shoot_id = ? WHERE id = ?',
+          [formData.title, parseFloat(formData.amount), formData.category, formData.paid_to, formData.payment_method, formData.status, formData.date, formData.notes, formData.shoot_id, editingExpense.id]
+        );
+        Alert.alert('Success', 'Expense updated successfully');
+      } else {
+        // Create new expense
+        await db.runAsync(
+          'INSERT INTO expenses (title, amount, category, paid_to, payment_method, status, date, notes, shoot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [formData.title, parseFloat(formData.amount), formData.category, formData.paid_to, formData.payment_method, formData.status, formData.date, formData.notes, formData.shoot_id]
+        );
+        Alert.alert('Success', 'Expense recorded');
+      }
 
       setIsModalVisible(false);
       resetForm();
       loadData();
-      Alert.alert('Success', 'Expense recorded');
     } catch (error) {
-      console.error('Error adding expense:', error);
+      console.error('Error saving expense:', error);
       Alert.alert('Error', 'Failed to save expense');
     }
   };
 
   const resetForm = () => {
     setFormData({
+      expense_id: getNextExpenseId(),
       title: '',
       amount: '',
       category: 'Other',
@@ -190,47 +260,202 @@ export default function Expenses() {
     }
   };
 
-  const StatCard = ({ title, value, color, icon }: any) => (
-    <View style={[styles.statCard, { backgroundColor: colors.surface, borderLeftColor: color }]}>
-      <View style={[styles.statIcon, { backgroundColor: color + '15' }]}>
-        <Ionicons name={icon} size={14} color={color} />
-      </View>
-      <Text style={[styles.statValue, { color: colors.text }]} numberOfLines={1}>₹{Math.round(value).toLocaleString('en-IN')}</Text>
-      <Text style={[styles.statTitle, { color: colors.textSecondary }]} numberOfLines={1}>{title}</Text>
-    </View>
-  );
+  const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
+    const isTablet = screenWidth > 768;
+    
+    return (
+      <LinearGradient
+        colors={gradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[
+          styles.summaryCard,
+          { height: isTablet ? 100 : 80 }
+        ]}
+      >
+        <View style={styles.summaryContent}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count}</Text>
+            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>{title}</Text>
+          </View>
+          <View style={[styles.summaryIconContainer, { width: isTablet ? 44 : 36, height: isTablet ? 44 : 36 }]}>
+            <Ionicons name={icon} size={isTablet ? 28 : 24} color="#fff" />
+          </View>
+        </View>
+      </LinearGradient>
+    );
+  };
 
   const TableHeader = () => (
     <View style={[styles.tableHeader, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-      <Text style={[styles.col, styles.colTitle, { color: colors.textSecondary }]}>EXPENSE TITLE</Text>
-      <Text style={[styles.col, styles.colCategory, { color: colors.textSecondary }]}>CATEGORY</Text>
-      <Text style={[styles.col, styles.colShoot, { color: colors.textSecondary }]}>LINKED SHOOT</Text>
-      <Text style={[styles.col, styles.colPaidTo, { color: colors.textSecondary }]}>PAID TO</Text>
-      <Text style={[styles.col, styles.colAmount, { color: colors.textSecondary }]}>AMOUNT</Text>
-      <Text style={[styles.col, styles.colMethod, { color: colors.textSecondary }]}>METHOD</Text>
-      <Text style={[styles.col, styles.colDate, { color: colors.textSecondary }]}>DATE</Text>
-      <Text style={[styles.col, styles.colStatus, { color: colors.textSecondary }]}>STATUS</Text>
-      <Text style={[styles.col, styles.colNotes, { color: colors.textSecondary }]}>NOTES</Text>
+      <Text style={[styles.col, styles.colDate, { color: colors.textSecondary, textAlign: 'center' }]}>DATE</Text>
+      <Text style={[styles.col, styles.colTitle, { color: colors.textSecondary, textAlign: 'center' }]}>EXPENSE TITLE</Text>
+      <Text style={[styles.col, styles.colCategory, { color: colors.textSecondary, textAlign: 'center' }]}>CATEGORY</Text>
+      <Text style={[styles.col, styles.colShoot, { color: colors.textSecondary, textAlign: 'center' }]}>LINKED SHOOT</Text>
+      <Text style={[styles.col, styles.colPaidTo, { color: colors.textSecondary, textAlign: 'center' }]}>PAID TO</Text>
+      <Text style={[styles.col, styles.colAmount, { color: colors.textSecondary, textAlign: 'center' }]}>AMOUNT</Text>
+      <Text style={[styles.col, styles.colMethod, { color: colors.textSecondary, textAlign: 'center' }]}>METHOD</Text>
+      <Text style={[styles.col, styles.colStatus, { color: colors.textSecondary, textAlign: 'center' }]}>STATUS</Text>
+      <Text style={[styles.col, styles.colNotes, { color: colors.textSecondary, textAlign: 'center' }]}>NOTES</Text>
+    </View>
+  );
+
+  const handleEditExpense = (expense: any) => {
+    setFormData({
+      expense_id: expense.expense_id || `E${(expense.id || 1).toString().padStart(4, '0')}`,
+      title: expense.title || '',
+      amount: String(expense.amount || ''),
+      category: expense.category || 'Other',
+      paid_to: expense.paid_to || '',
+      payment_method: expense.payment_method || 'UPI',
+      status: expense.status || 'paid',
+      date: expense.date ? format(parseISO(expense.date), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+      notes: expense.notes || '',
+      shoot_id: expense.shoot_id || null,
+    });
+    setEditingExpense(expense);
+    setIsModalVisible(true);
+  };
+
+  const handleDeleteExpense = (expenseId: number) => {
+    Alert.alert('Delete Expense', 'Are you sure?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const db = getDatabase();
+            await db.runAsync('DELETE FROM expenses WHERE id = ?', [expenseId]);
+            loadData();
+          } catch (error) {
+            Alert.alert('Error', 'Failed to delete expense');
+          }
+        }
+      }
+    ]);
+  };
+
+  const renderExpenseCard = ({ item }: { item: any }) => (
+    <View style={{ marginBottom: 16 }}>
+      <View style={[styles.expenseCard, { backgroundColor: colors.surface }]}>
+        {/* Top Section with Info and Actions */}
+        <View style={[styles.expenseCardTop, { borderBottomColor: colors.border }]}>
+          <View style={{ flex: 1 }}>
+            <View>
+              <View style={{ flexDirection: 'row', gap: 12, marginBottom: 8, alignItems: 'center' }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.expenseTitle, { color: colors.text }]}>{item.title}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.expenseDate, { color: colors.textSecondary }]}>
+                    {item.date ? format(parseISO(item.date), 'dd-MMM-yy') : '-'}
+                  </Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.expenseId, { color: colors.primary, fontWeight: '700', fontSize: 13 }]}>
+                    {item.expense_id || `E${(item.id || 1).toString().padStart(4, '0')}`}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* Action Buttons at Top Right */}
+          <View style={styles.cardActions}>
+            <TouchableOpacity
+              style={[styles.actionIconBtn, { backgroundColor: colors.warning + '20' }]}
+              onPress={() => handleEditExpense(item)}
+            >
+              <Ionicons name="create" size={20} color={colors.warning} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionIconBtn, { backgroundColor: colors.error + '20' }]}
+              onPress={() => handleDeleteExpense(item.id)}
+            >
+              <Ionicons name="trash" size={20} color={colors.error} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Stats Section */}
+        <View style={styles.expenseStatsSection}>
+          <View style={styles.statBlock}>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Amount</Text>
+            <Text style={[styles.statValue, { color: colors.error }]}>₹{(item.amount || 0).toLocaleString()}</Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.statBlock}>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Paid To</Text>
+            <Text style={[styles.statValue, { color: colors.text }]}>{item.paid_to || '-'}</Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.statBlock}>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Method</Text>
+            <Text style={[styles.statValue, { color: colors.textSecondary }]}>{item.payment_method}</Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={[styles.statusBadgeContainer, { backgroundColor: (item.status === 'paid' ? colors.success : item.status === 'pending' ? colors.warning : colors.info) + '10' }]}>
+            <Text style={[styles.statusText, { color: item.status === 'paid' ? colors.success : item.status === 'pending' ? colors.warning : colors.info }]}>
+              {item.status.toUpperCase()}
+            </Text>
+          </View>
+        </View>
+
+        {/* Additional Details - Three Column Layout */}
+        {(item.shoot_name || item.category || item.notes) && (
+          <View style={[styles.expenseDetails, { borderTopColor: colors.border }]}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                {item.shoot_name && (
+                  <>
+                    <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>Linked Shoot</Text>
+                    <Text style={[styles.detailsValue, { color: colors.primary }]}>{item.shoot_name}</Text>
+                  </>
+                )}
+              </View>
+              <View style={{ flex: 1, marginHorizontal: 8 }}>
+                {item.category && (
+                  <>
+                    <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>Category</Text>
+                    <Text style={[styles.detailsValue, { color: colors.text }]}>{item.category}</Text>
+                  </>
+                )}
+              </View>
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                {item.notes && (
+                  <>
+                    <Text style={[styles.detailsLabel, { color: colors.textSecondary }]}>Notes</Text>
+                    <Text style={[styles.detailsValue, { color: colors.text }]}>{item.notes}</Text>
+                  </>
+                )}
+              </View>
+            </View>
+          </View>
+        )}
+      </View>
     </View>
   );
 
   const renderExpenseRow = ({ item }: { item: any }) => (
     <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
-      <Text style={[styles.col, styles.colTitle, { color: colors.text, fontWeight: '700' }]}>{item.title}</Text>
-      <Text style={[styles.col, styles.colCategory, { color: colors.textSecondary }]}>{item.category}</Text>
-      <Text style={[styles.col, styles.colShoot, { color: colors.primary, fontWeight: '600' }]}>{item.shoot_name || '-'}</Text>
-      <Text style={[styles.col, styles.colPaidTo, { color: colors.text }]}>{item.paid_to || '-'}</Text>
-      <Text style={[styles.col, styles.colAmount, { color: colors.error, fontWeight: '800' }]}>₹{(item.amount || 0).toLocaleString('en-IN')}</Text>
-      <Text style={[styles.col, styles.colMethod, { color: colors.textSecondary }]}>{item.payment_method}</Text>
-      <Text style={[styles.col, styles.colDate, { color: colors.textTertiary }]}>
+      <Text style={[styles.col, styles.colDate, { color: colors.textTertiary, textAlign: 'center' }]}>
         {item.date ? format(parseISO(item.date), 'dd MMM yyyy') : '-'}
       </Text>
+      <Text style={[styles.col, styles.colTitle, { color: colors.text, fontWeight: '700', textAlign: 'center' }]}>{item.title}</Text>
+      <Text style={[styles.col, styles.colCategory, { color: colors.textSecondary, textAlign: 'center' }]}>{item.category}</Text>
+      <Text style={[styles.col, styles.colShoot, { color: colors.primary, fontWeight: '600', textAlign: 'center' }]}>{item.shoot_name || '-'}</Text>
+      <Text style={[styles.col, styles.colPaidTo, { color: colors.text, textAlign: 'center' }]}>{item.paid_to || '-'}</Text>
+      <Text style={[styles.col, styles.colAmount, { color: colors.error, fontWeight: '800', textAlign: 'center' }]}>₹{(item.amount || 0).toLocaleString('en-IN')}</Text>
+      <Text style={[styles.col, styles.colMethod, { color: colors.textSecondary, textAlign: 'center' }]}>{item.payment_method}</Text>
       <View style={[styles.col, styles.colStatus]}>
         <View style={[styles.statusBadge, { backgroundColor: (item.status === 'paid' ? colors.success : item.status === 'pending' ? colors.warning : colors.info) + '20' }]}>
           <Text style={[styles.statusBadgeText, { color: item.status === 'paid' ? colors.success : item.status === 'pending' ? colors.warning : colors.info }]}>{item.status?.toUpperCase()}</Text>
         </View>
       </View>
-      <Text style={[styles.col, styles.colNotes, { color: colors.textTertiary }]}>{item.notes || '-'}</Text>
+      <Text style={[styles.col, styles.colNotes, { color: colors.textTertiary, textAlign: 'center' }]}>{item.notes || '-'}</Text>
     </View>
   );
 
@@ -245,11 +470,9 @@ export default function Expenses() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.statsContainer}>
-        <StatCard title="Total" value={stats.total} color={colors.error} icon="wallet-outline" />
-        <StatCard title="Month" value={stats.thisMonth} color={colors.warning} icon="calendar-outline" />
-        <StatCard title="Year" value={stats.thisYear} color={colors.info} icon="stats-chart-outline" />
-        <StatCard title="Proj." value={stats.projected} color={colors.primary} icon="trending-down-outline" />
-        <StatCard title="Ops" value={stats.operational} color={colors.success} icon="business-outline" />
+        <SummaryCard title="Total Expenses" count={`₹${Math.round(stats.total).toLocaleString('en-IN')}`} icon="wallet-outline" gradient={['#ef4444', '#dc2626']} type="total" />
+        <SummaryCard title="This Month" count={`₹${Math.round(stats.thisMonth).toLocaleString('en-IN')}`} icon="calendar-outline" gradient={['#f59e0b', '#d97706']} type="month" />
+        <SummaryCard title="This Year" count={`₹${Math.round(stats.thisYear).toLocaleString('en-IN')}`} icon="stats-chart-outline" gradient={['#3b82f6', '#2563eb']} type="year" />
       </View>
 
       <View style={styles.searchBarRow}>
@@ -277,25 +500,40 @@ export default function Expenses() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.tableWrapper}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={true}>
-          <View>
-            <TableHeader />
-            <FlatList
-              data={filteredExpenses}
-              renderItem={renderExpenseRow}
-              keyExtractor={(item) => item.id.toString()}
-              contentContainerStyle={styles.listContent}
-              ListEmptyComponent={
-                <View style={[styles.emptyState, { width: screenWidth }]}>
-                  <Ionicons name="receipt-outline" size={64} color={colors.textTertiary} />
-                  <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No expenses found</Text>
-                </View>
-              }
-            />
+      {/* Financial Summary Section */}
+      <View style={styles.financialSummaryContainer}>
+        <View style={styles.financialSummaryCard}>
+          <View style={styles.financialSummaryContent}>
+            <View style={styles.financialSummaryItem}>
+              <Text style={[styles.financialSummaryLabel, { color: colors.textSecondary }]}>Total Income</Text>
+              <Text style={[styles.financialSummaryValue, { color: colors.success }]}>₹{Math.round(stats.totalIncome).toLocaleString('en-IN')}</Text>
+            </View>
+            <View style={styles.financialSummaryDivider} />
+            <View style={styles.financialSummaryItem}>
+              <Text style={[styles.financialSummaryLabel, { color: colors.textSecondary }]}>Total Expenses</Text>
+              <Text style={[styles.financialSummaryValue, { color: colors.error }]}>₹{Math.round(stats.total).toLocaleString('en-IN')}</Text>
+            </View>
+            <View style={styles.financialSummaryDivider} />
+            <View style={styles.financialSummaryItem}>
+              <Text style={[styles.financialSummaryLabel, { color: colors.textSecondary }]}>Profit</Text>
+              <Text style={[styles.financialSummaryValue, { color: stats.profit >= 0 ? colors.success : colors.error }]}>
+                {stats.profit >= 0 ? `₹${Math.round(stats.profit).toLocaleString('en-IN')}` : `-₹${Math.round(Math.abs(stats.profit)).toLocaleString('en-IN')}`}
+              </Text>
+            </View>
           </View>
-        </ScrollView>
+        </View>
       </View>
+
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }} showsVerticalScrollIndicator={false}>
+        {filteredExpenses.length === 0 ? (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <Ionicons name="receipt-outline" size={48} color={colors.textTertiary} />
+            <Text style={[styles.emptyText, { color: colors.textTertiary }]}>No expenses found</Text>
+          </View>
+        ) : (
+          filteredExpenses.map((expense) => <View key={expense.id}>{renderExpenseCard({ item: expense })}</View>)
+        )}
+      </ScrollView>
 
       {/* Add Expense Modal */}
       <Modal visible={isModalVisible} animationType="slide" transparent={true}>
@@ -461,10 +699,11 @@ export default function Expenses() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   statsContainer: { flexDirection: 'row', paddingHorizontal: 10, gap: 6, marginTop: 10, justifyContent: 'space-between' },
-  statCard: { flex: 1, padding: 8, borderRadius: 12, borderLeftWidth: 3, elevation: 4, alignItems: 'center', minHeight: 80, justifyContent: 'center' },
-  statIcon: { width: 24, height: 24, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginBottom: 4 },
-  statValue: { fontSize: 11, fontWeight: '800' },
-  statTitle: { fontSize: 8, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
+  summaryCard: { flex: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  summaryCount: { color: '#fff', fontWeight: '800' },
+  summaryTitle: { color: 'rgba(255,255,255,0.8)', fontWeight: '600' },
+  summaryIconContainer: { borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
 
   searchBarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 10, marginTop: 15 },
   searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, height: 44 },
@@ -472,18 +711,18 @@ const styles = StyleSheet.create({
   actionBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, elevation: 2 },
 
   tableWrapper: { flex: 1, marginTop: 20 },
-  tableHeader: { flexDirection: 'row', paddingVertical: 15, paddingHorizontal: 16, borderBottomWidth: 1 },
-  tableRow: { flexDirection: 'row', paddingVertical: 15, paddingHorizontal: 16, borderBottomWidth: 1, alignItems: 'center' },
-  col: { fontSize: 12, fontWeight: '600' },
-  colTitle: { width: 200 },
-  colCategory: { width: 130 },
-  colShoot: { width: 160 },
-  colPaidTo: { width: 140 },
-  colAmount: { width: 120 },
-  colMethod: { width: 150 },
-  colDate: { width: 120 },
-  colStatus: { width: 110 },
-  colNotes: { width: 250 },
+  tableHeader: { flexDirection: 'row', paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: 2 },
+  tableRow: { flexDirection: 'row', paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: 1, backgroundColor: '#fff' },
+  col: {},
+  colTitle: { width: 240, flexShrink: 1 },
+  colCategory: { width: 130, flexShrink: 1 },
+  colShoot: { width: 160, flexShrink: 1 },
+  colPaidTo: { width: 180, flexShrink: 1 },
+  colAmount: { width: 140, flexShrink: 1 },
+  colMethod: { width: 150, flexShrink: 1 },
+  colDate: { width: 140, flexShrink: 1 },
+  colStatus: { width: 130, flexShrink: 1 },
+  colNotes: { width: 220, flexShrink: 1 },
 
   statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
   statusBadgeText: { fontSize: 10, fontWeight: '800' },
@@ -518,4 +757,35 @@ const styles = StyleSheet.create({
   calcGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
   calcBtnSmall: { width: '22%', height: 50, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   calcBtnText: { fontSize: 18, fontWeight: '700' },
+  financialSummaryContainer: { paddingHorizontal: 16, marginBottom: -7, marginTop: 5 },
+  financialSummaryCard: { borderRadius: 16, padding: 12, elevation: 2 },
+  financialSummaryContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  financialSummaryItem: { flex: 1, alignItems: 'center' },
+  financialSummaryLabel: { fontSize: 12, fontWeight: '600', marginRight: 4 },
+  financialSummaryValue: { fontSize: 16, fontWeight: '800' },
+  financialSummaryDivider: { width: 1, height: 40, marginHorizontal: 8, opacity: 0.3 },
+
+  // Expense Card Styles
+  expenseCard: { borderRadius: 16, overflow: 'hidden', elevation: 2 },
+  expenseCardTop: { padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottomWidth: 1 },
+  expenseTitle: { fontWeight: '800', fontSize: 18, marginBottom: 4 },
+  expenseCategory: { fontWeight: '600', fontSize: 16 },
+  expenseDate: { fontSize: 14, marginTop: 4 },
+  expenseStatsSection: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 0 },
+  expenseDetails: { borderTopWidth: 1, paddingVertical: 12, paddingHorizontal: 16 },
+  detailsLabel: { fontSize: 12, fontWeight: '600', marginBottom: 4 },
+  detailsValue: { fontSize: 14, fontWeight: '600' },
+
+  // Shared styles with Payments page
+  statBlock: { flex: 1, alignItems: 'center' },
+  statLabel: { fontSize: 11, fontWeight: '600', marginBottom: 4 },
+  statValue: { fontSize: 14, fontWeight: '800' },
+  divider: { width: 1, height: 40, marginHorizontal: 0, opacity: 0.1 },
+  statusBadgeContainer: { flex: 1, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 10, alignItems: 'center' },
+  statusText: { fontSize: 10, fontWeight: '800' },
+  expenseId: { fontSize: 13, fontWeight: '700' },
+
+  // Action button styles (from Payments page)
+  cardActions: { flexDirection: 'row', gap: 8 },
+  actionIconBtn: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }
 });

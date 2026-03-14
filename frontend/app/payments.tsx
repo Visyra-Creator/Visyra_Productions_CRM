@@ -54,7 +54,7 @@ interface Shoot { id: number; client_id: number; event_type: string; }
 interface AppOption { id: number; label: string; }
 
 export default function Payments() {
-  const SortOption = ({ label, value, icon }: { label: string; value: string; icon: string }) => (
+  const SortOption = ({ label, value, icon }: { label: string; value: string; icon: any }) => (
     <TouchableOpacity
       style={[styles.sortOption, { backgroundColor: sortBy === value ? colors.primary : colors.surface, borderColor: colors.border }]}
       onPress={() => {
@@ -227,6 +227,22 @@ export default function Payments() {
     return balance > 0 ? 'partial' : 'pending';
   };
 
+  const [expenses, setExpenses] = useState<any[]>([]);
+
+  const loadExpenses = useCallback(async () => {
+    try {
+      const db = getDatabase();
+      const expResult = await db.getAllAsync('SELECT * FROM expenses');
+      setExpenses(expResult as any[]);
+    } catch (error) {
+      console.error('Error loading expenses:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadExpenses();
+  }, [loadExpenses]);
+
   const stats = useMemo(() => {
     const now = new Date();
     const totalRevenue = invoices.reduce((s, inv) => s + (inv.total_amount || 0), 0);
@@ -238,6 +254,14 @@ export default function Payments() {
       .reduce((s, pr) => s + (pr.amount || 0), 0);
     return { totalRevenue, thisMonth, totalCollected };
   }, [invoices, paymentRecords]);
+
+  const totalExpenses = useMemo(() => {
+    return expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+  }, [expenses]);
+
+  const profit = useMemo(() => {
+    return stats.totalCollected - totalExpenses;
+  }, [stats.totalCollected, totalExpenses]);
 
   const isAnyFilterActive = useMemo(() => {
     return filters.startDate !== '' || filters.endDate !== '' || filters.status !== 'all' || filters.client_id !== 'all' || filters.payment_method !== 'all' || filters.minAmount !== '' || filters.maxAmount !== '' || filters.minBalance !== '' || filters.maxBalance !== '';
@@ -939,9 +963,9 @@ export default function Payments() {
             <View style={{ padding: 8 }}>
               <SortOption label="ID: Oldest First" value="id_asc" icon="list-outline" />
               <SortOption label="ID: Newest First" value="id_desc" icon="list-outline" />
-              <SortOption label="Date: Newest First" value="date_desc" icon="calendar" />
+              <SortOption label="Date: Newest First" value="date_desc" icon="calendar-outline" />
               <SortOption label="Date: Oldest First" value="date_asc" icon="calendar-outline" />
-              <SortOption label="Client: A to Z" value="client_asc" icon="text-outline" />
+              <SortOption label="Client: A to Z" value="client_asc" icon="person-outline" />
             </View>
           </View>
         </TouchableOpacity>
@@ -1111,5 +1135,12 @@ const styles = StyleSheet.create({
   filterChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1 },
   rangeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   submitButton: { padding: 16, borderRadius: 12, alignItems: 'center', backgroundColor: '#007AFF' },
-  submitButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' }
+  submitButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  financialSummaryContainer: { paddingHorizontal: 16, marginBottom: 12 },
+  financialSummaryCard: { borderRadius: 16, padding: 12, elevation: 2 },
+  financialSummaryContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  financialSummaryItem: { flex: 1, alignItems: 'center' },
+  financialSummaryLabel: { fontSize: 12, fontWeight: '600', marginBottom: 4 },
+  financialSummaryValue: { fontSize: 16, fontWeight: '800' },
+  financialSummaryDivider: { width: 1, height: 40, marginHorizontal: 8, opacity: 0.3 }
 });

@@ -112,7 +112,7 @@ export default function Dashboard() {
       const paymentsCount: any = await db.getAllAsync("SELECT COUNT(*) as count FROM payments WHERE status IN ('pending', 'partial')");
       const balanceResult: any = await db.getAllAsync("SELECT SUM(balance) as total FROM payments WHERE status IN ('pending', 'partial')");
       const revenueResult: any = await db.getAllAsync(
-        `SELECT SUM(paid_amount) as total FROM payments 
+        `SELECT SUM(amount) as total FROM payment_records 
          WHERE strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')`
       );
       const expensesResult: any = await db.getAllAsync(
