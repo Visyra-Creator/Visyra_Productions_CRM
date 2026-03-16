@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as packagesService from '../src/api/services/packages';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '@/src/theme/colors';
 
@@ -95,13 +95,12 @@ export default function WeddingPackages() {
 
   const loadPackages = async () => {
     try {
-      const db = getDatabase();
       const allTypes = [...WEDDING_SECTION_TYPES, ...customSections].map(t => t.type);
-      const typeList = allTypes.map(type => `'${type}'`).join(', ');
-      const result = await db.getAllAsync(
-        `SELECT * FROM packages WHERE event_type IN (${typeList}, 'Wedding') ORDER BY price ASC`
-      );
-      setPackages(result as Package[]);
+      const result = await packagesService.getAll();
+      const filtered = result
+        .filter((pkg) => allTypes.includes(String(pkg.event_type)) || pkg.event_type === 'Wedding')
+        .sort((a, b) => Number(a.price ?? 0) - Number(b.price ?? 0));
+      setPackages(filtered as Package[]);
     } catch (error) {
       console.error('Error loading wedding packages:', error);
     }
@@ -210,8 +209,9 @@ export default function WeddingPackages() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const db = getDatabase();
-              await db.runAsync('DELETE FROM packages WHERE event_type = ?', [sectionType]);
+              const allPackages = await packagesService.getAll();
+              const sectionPackages = allPackages.filter((pkg) => pkg.event_type === sectionType);
+              await Promise.all(sectionPackages.map((pkg: any) => packagesService.delete(String(pkg.id))));
               setCustomSections(prev => prev.filter(s => s.type !== sectionType));
               loadPackages();
               Alert.alert('Success', 'Section and its packages deleted');
@@ -232,21 +232,17 @@ export default function WeddingPackages() {
     }
 
     try {
-      const db = getDatabase();
-      await db.runAsync(
-        'INSERT INTO packages (name, event_type, price, duration_hours, covers, team_type, team_size, deliverables, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          formData.name,
-          formData.event_type,
-          parseFloat(formData.price),
-          parseInt(formData.duration_hours) || 0,
-          formData.covers,
-          formData.team_type,
-          parseInt(formData.team_size) || 0,
-          formData.deliverables,
-          formData.description
-        ]
-      );
+      await packagesService.create({
+        name: formData.name,
+        event_type: formData.event_type,
+        price: parseFloat(formData.price),
+        duration_hours: parseInt(formData.duration_hours, 10) || 0,
+        covers: formData.covers,
+        team_type: formData.team_type,
+        team_size: parseInt(formData.team_size, 10) || 0,
+        deliverables: formData.deliverables,
+        description: formData.description,
+      });
 
       setIsModalVisible(false);
       loadPackages();
@@ -356,21 +352,16 @@ export default function WeddingPackages() {
     }
 
     try {
-      const db = getDatabase();
-      await db.runAsync(
-        'UPDATE packages SET name = ?, price = ?, duration_hours = ?, covers = ?, team_type = ?, team_size = ?, deliverables = ?, description = ? WHERE id = ?',
-        [
-          formData.name,
-          parseFloat(formData.price),
-          parseInt(formData.duration_hours) || 0,
-          formData.covers,
-          formData.team_type,
-          parseInt(formData.team_size) || 0,
-          formData.deliverables,
-          formData.description,
-          editingPackage.id
-        ]
-      );
+      await packagesService.update(String(editingPackage.id), {
+        name: formData.name,
+        price: parseFloat(formData.price),
+        duration_hours: parseInt(formData.duration_hours, 10) || 0,
+        covers: formData.covers,
+        team_type: formData.team_type,
+        team_size: parseInt(formData.team_size, 10) || 0,
+        deliverables: formData.deliverables,
+        description: formData.description,
+      });
 
       setIsEditPackageModalVisible(false);
       setEditingPackage(null);
@@ -559,8 +550,7 @@ export default function WeddingPackages() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const db = getDatabase();
-              await db.runAsync('DELETE FROM packages WHERE id = ?', [packageId]);
+              await packagesService.delete(String(packageId));
               loadPackages();
               Alert.alert('Success', 'Package deleted');
             } catch (error) {

@@ -17,7 +17,11 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as expensesService from '../src/api/services/expenses';
+import * as shootsService from '../src/api/services/shoots';
+import * as appOptionsService from '../src/api/services/appOptions';
+import * as paymentsService from '../src/api/services/payments';
+import * as paymentRecordsService from '../src/api/services/paymentRecords';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, startOfMonth, endOfMonth, isWithinInterval, startOfYear, endOfYear } from 'date-fns';
 
@@ -104,50 +108,58 @@ export default function Expenses() {
 
   const loadData = useCallback(async () => {
     try {
-      const db = getDatabase();
-
       // Seed default expense categories if they don't exist
-      const existingCats = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_category'");
+      const allOptions = await appOptionsService.getAll();
+      const existingCats = allOptions.filter((option) => option.type === 'expense_category');
       if (existingCats.length === 0) {
         for (const cat of EXPENSE_CATEGORIES_DEFAULTS) {
-          await db.runAsync(
-            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
-            ['expense_category', cat.label, cat.value]
-          );
+          await appOptionsService.create({ type: 'expense_category', label: cat.label, value: cat.value });
         }
       }
 
       // Seed default expense statuses if they don't exist
-      const existingStatuses = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_status'");
+      const existingStatuses = allOptions.filter((option) => option.type === 'expense_status');
       if (existingStatuses.length === 0) {
         for (const status of EXPENSE_STATUSES_DEFAULTS) {
-          await db.runAsync(
-            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
-            ['expense_status', status.label, status.value]
-          );
+          await appOptionsService.create({ type: 'expense_status', label: status.label, value: status.value });
         }
       }
 
-      const [expResult, shootResult, methodResult, catResult, statusResult] = await Promise.all([
-        db.getAllAsync(
-          `SELECT e.*, s.event_type as shoot_name
-           FROM expenses e
-           LEFT JOIN shoots s ON e.shoot_id = s.id
-           ORDER BY e.date DESC`
-        ),
-        db.getAllAsync('SELECT id, event_type FROM shoots'),
-        db.getAllAsync("SELECT * FROM app_options WHERE type = 'payment_method' ORDER BY label ASC"),
-        db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_category' ORDER BY id ASC"),
-        db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_status' ORDER BY id ASC")
+      const [expResult, shootResult, refreshedOptions] = await Promise.all([
+        expensesService.getAll(),
+        shootsService.getAll(),
+        appOptionsService.getAll(),
       ]);
-      setExpenses(expResult as any[]);
-      setShoots(shootResult as any[]);
-      setPaymentMethods(methodResult as AppOption[]);
-      setExpenseCategories(catResult as AppOption[]);
-      setExpenseStatuses(statusResult as AppOption[]);
 
-      if (methodResult.length > 0 && !formData.payment_method) {
-        setFormData(prev => ({ ...prev, payment_method: (methodResult[0] as AppOption).label }));
+      const shootsById = new Map(shootResult.map((shoot: any) => [String(shoot.id), shoot]));
+      const expWithShoots = [...expResult]
+        .map((expense: any) => ({
+          ...expense,
+          shoot_name: shootsById.get(String(expense.shoot_id))?.event_type ?? null,
+        }))
+        .sort((a: any, b: any) => String(b.date ?? '').localeCompare(String(a.date ?? '')));
+
+      setExpenses(expWithShoots as any[]);
+      setShoots(shootResult as any[]);
+      setPaymentMethods(
+        refreshedOptions
+          .filter((option) => option.type === 'payment_method')
+          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+      );
+      setExpenseCategories(
+        refreshedOptions
+          .filter((option) => option.type === 'expense_category')
+          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
+      );
+      setExpenseStatuses(
+        refreshedOptions
+          .filter((option) => option.type === 'expense_status')
+          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
+      );
+
+      const methodOptions = refreshedOptions.filter((option) => option.type === 'payment_method') as AppOption[];
+      if (methodOptions.length > 0 && !formData.payment_method) {
+        setFormData(prev => ({ ...prev, payment_method: methodOptions[0].label }));
       }
     } catch (error) {
       console.error('Error loading data:', error);
@@ -176,10 +188,9 @@ export default function Expenses() {
 
   const loadPaymentsData = useCallback(async () => {
     try {
-      const db = getDatabase();
       const [invResult, prResult] = await Promise.all([
-        db.getAllAsync('SELECT * FROM payments'),
-        db.getAllAsync('SELECT * FROM payment_records')
+        paymentsService.getAll(),
+        paymentRecordsService.getAll(),
       ]);
       setInvoices(invResult as any[]);
       setPaymentRecords(prResult as any[]);
@@ -236,21 +247,33 @@ export default function Expenses() {
     }
 
     try {
-      const db = getDatabase();
-      
       if (editingExpense) {
         // Update existing expense
-        await db.runAsync(
-          'UPDATE expenses SET title = ?, amount = ?, category = ?, paid_to = ?, payment_method = ?, status = ?, date = ?, notes = ?, shoot_id = ? WHERE id = ?',
-          [formData.title, parseFloat(formData.amount), formData.category, formData.paid_to, formData.payment_method, formData.status, formData.date, formData.notes, formData.shoot_id, editingExpense.id]
-        );
+        await expensesService.update(String(editingExpense.id), {
+          title: formData.title,
+          amount: parseFloat(formData.amount),
+          category: formData.category,
+          paid_to: formData.paid_to,
+          payment_method: formData.payment_method,
+          status: formData.status,
+          date: formData.date,
+          notes: formData.notes,
+          shoot_id: formData.shoot_id,
+        });
         Alert.alert('Success', 'Expense updated successfully');
       } else {
         // Create new expense
-        await db.runAsync(
-          'INSERT INTO expenses (title, amount, category, paid_to, payment_method, status, date, notes, shoot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [formData.title, parseFloat(formData.amount), formData.category, formData.paid_to, formData.payment_method, formData.status, formData.date, formData.notes, formData.shoot_id]
-        );
+        await expensesService.create({
+          title: formData.title,
+          amount: parseFloat(formData.amount),
+          category: formData.category,
+          paid_to: formData.paid_to,
+          payment_method: formData.payment_method,
+          status: formData.status,
+          date: formData.date,
+          notes: formData.notes,
+          shoot_id: formData.shoot_id,
+        });
         Alert.alert('Success', 'Expense recorded');
       }
 
@@ -370,8 +393,7 @@ export default function Expenses() {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDatabase();
-            await db.runAsync('DELETE FROM expenses WHERE id = ?', [expenseId]);
+            await expensesService.delete(String(expenseId));
             loadData();
           } catch (error) {
             Alert.alert('Error', 'Failed to delete expense');

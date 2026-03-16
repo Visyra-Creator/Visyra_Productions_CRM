@@ -19,15 +19,6 @@ config.resolver = {
     /.*\/\._.*/,
     /.*\.DS_Store/
   ],
-  resolveRequest: (context, moduleName, platform) => {
-    // Exclude expo-sqlite on web platform
-    if (platform === 'web' && moduleName.includes('expo-sqlite')) {
-      return {
-        type: 'empty',
-      };
-    }
-    return context.resolveRequest(context, moduleName, platform);
-  },
 };
 
 // Reduce the number of workers to decrease resource usage

@@ -18,7 +18,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as leadsService from '../src/api/services/leads';
+import * as clientsService from '../src/api/services/clients';
+import * as appOptionsService from '../src/api/services/appOptions';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, isToday, isThisWeek, isThisMonth, isSameDay, isSameWeek, isSameMonth, startOfWeek, endOfWeek, startOfMonth, endOfMonth, setMonth, setYear, setDate, addWeeks, differenceInCalendarWeeks } from 'date-fns';
 import { useRouter } from 'expo-router';
@@ -63,6 +65,14 @@ const LEAD_STAGES_DEFAULTS = [
   { label: 'Proposal Sent', value: 'proposal', color: '#f59e0b' },
   { label: 'Won', value: 'won', color: '#10b981' },
   { label: 'Lost', value: 'lost', color: '#ef4444' }
+];
+
+const LEAD_SOURCES_DEFAULTS = [
+  { label: 'Instagram', value: 'instagram', color: '#e1306c' },
+  { label: 'Google', value: 'google', color: '#4285f4' },
+  { label: 'WhatsApp', value: 'whatsapp', color: '#25d366' },
+  { label: 'Referral', value: 'referral', color: '#8b5cf6' },
+  { label: 'Facebook', value: 'facebook', color: '#1877f2' }
 ];
 
 interface AppOption {
@@ -208,37 +218,56 @@ export default function Leads() {
 
   const loadData = useCallback(async () => {
     try {
-      const db = getDatabase();
-      if (!db) {
-        setDbReady(false);
-        return;
-      }
       setDbReady(true);
       setLoading(true);
 
       // Seed default lead stages if they don't exist
-      const existingStages = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_stage'");
+      const allOptions = await appOptionsService.getAll();
+      const existingStages = allOptions.filter((option) => option.type === 'lead_stage');
       if (existingStages.length === 0) {
         for (const stage of LEAD_STAGES_DEFAULTS) {
-          await db.runAsync(
-            "INSERT INTO app_options (type, label, value, color) VALUES (?, ?, ?, ?)",
-            ['lead_stage', stage.label, stage.value, stage.color]
-          );
+          await appOptionsService.create({
+            type: 'lead_stage',
+            label: stage.label,
+            value: stage.value,
+            color: stage.color,
+          });
         }
       }
 
-      const result = await db.getAllAsync('SELECT * FROM leads ORDER BY id DESC');
-      const allLeads = result as Lead[];
+      const result = await leadsService.getAll();
+      const allLeads = [...result]
+        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? ''))) as Lead[];
       setLeads(allLeads);
 
-      const sources = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_source' ORDER BY label ASC");
-      setLeadSources(sources as AppOption[]);
+      const refreshedOptions = await appOptionsService.getAll();
+      const sourceOptions = refreshedOptions
+        .filter((option) => option.type === 'lead_source')
+        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[];
 
-      const stages = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_stage' ORDER BY id ASC");
-      setLeadStages(stages as AppOption[]);
+      setLeadSources(
+        sourceOptions.length > 0
+          ? sourceOptions
+          : LEAD_SOURCES_DEFAULTS.map((source, index) => ({
+              id: -(index + 1),
+              type: 'lead_source',
+              label: source.label,
+              value: source.value,
+              color: source.color,
+            }))
+      );
 
-      const types = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'event_type' ORDER BY label ASC");
-      setEventTypes(types as AppOption[]);
+      setLeadStages(
+        refreshedOptions
+          .filter((option) => option.type === 'lead_stage')
+          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
+      );
+
+      setEventTypes(
+        refreshedOptions
+          .filter((option) => option.type === 'event_type')
+          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+      );
 
       let todayCount = 0;
       let weekCount = 0;
@@ -402,27 +431,21 @@ export default function Leads() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Convert', onPress: async () => {
           try {
-            const db = getDatabase();
-            if (!db) return;
-
             const selectedLeads = leads.filter(l => selectedIds.has(l.id));
             
             for (const lead of selectedLeads) {
               // Add to clients table, preserving most lead fields so we can later restore exactly
-              await db.runAsync(
-                `INSERT INTO clients (name, phone, email, event_type, event_date, event_location, lead_source, notes, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-                [
-                  lead.name,
-                  lead.phone,
-                  lead.email,
-                  lead.event_type || null,
-                  lead.event_date || null,
-                  lead.company_name || null, // store company in location
-                  lead.source,
-                  lead.notes || null
-                ]
-              );
+              await clientsService.create({
+                name: lead.name,
+                phone: lead.phone,
+                email: lead.email,
+                event_type: lead.event_type || null,
+                event_date: lead.event_date || null,
+                event_location: lead.company_name || null,
+                lead_source: lead.source,
+                notes: lead.notes || null,
+                status: 'active',
+              });
               // Keep a copy in leads table (do not delete)
             }
 
@@ -442,31 +465,24 @@ export default function Leads() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Convert', onPress: async () => {
           try {
-            const db = getDatabase();
-            if (!db) return;
-
-            await db.runAsync(
-              `INSERT INTO clients (name, phone, email, event_type, event_date, event_location, lead_source, notes, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-              [
-                lead.name,
-                lead.phone,
-                lead.email,
-                lead.event_type || null,
-                lead.event_date || null,
-                lead.company_name || null,
-                lead.source,
-                lead.notes || null
-              ]
-            );
+            await clientsService.create({
+              name: lead.name,
+              phone: lead.phone,
+              email: lead.email,
+              event_type: lead.event_type || null,
+              event_date: lead.event_date || null,
+              event_location: lead.company_name || null,
+              lead_source: lead.source,
+              notes: lead.notes || null,
+              status: 'active',
+            });
 
             // Fetch the newly created client to open edit form
-            const result = await db.getAllAsync(
-              'SELECT * FROM clients ORDER BY id DESC LIMIT 1'
-            ) as any[];
-            
-            if (result && result.length > 0) {
-              const newClient = result[0];
+            const result = await clientsService.getAll() as any[];
+            const sorted = [...result].sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+
+            if (sorted.length > 0) {
+              const newClient = sorted[0];
               Alert.alert('Success', 'Lead converted to client successfully', [
                 { text: 'OK', onPress: () => {
                   // Navigate to clients page with parameter to auto-edit the new client
@@ -579,9 +595,9 @@ export default function Leads() {
     if (!gmailResult.valid) { Alert.alert('Warning', gmailResult.message); return; }
 
     try {
-      const db = getDatabase();
       if (!editingLeadId && !confirmDuplicate) {
-        const existing: any = await db.getAllAsync('SELECT name FROM leads WHERE phone = ?', [normalizedPhone]);
+        const allLeads = await leadsService.getAll();
+        const existing: any[] = allLeads.filter((lead: any) => lead.phone === normalizedPhone);
         if (existing.length > 0) {
           Alert.alert('Duplicate', `A lead named "${existing[0].name}" exists. Add anyway?`, [
             { text: 'Cancel', style: 'cancel' },
@@ -593,15 +609,31 @@ export default function Leads() {
 
   
       if (editingLeadId) {
-        await db.runAsync(
-          'UPDATE leads SET lead_id=?, name=?, company_name=?, phone=?, email=?, source=?, stage=?, event_date=?, next_follow_up=?, notes=? WHERE id=?',
-          [formData.lead_id || null, finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes, editingLeadId]
-        );
+        await leadsService.update(String(editingLeadId), {
+          lead_id: formData.lead_id || null,
+          name: finalName,
+          company_name: finalCompanyName || null,
+          phone: normalizedPhone,
+          email: gmailResult.email || null,
+          source: formData.source,
+          stage: formData.stage,
+          event_date: formData.event_date,
+          next_follow_up: formData.next_follow_up || null,
+          notes: formData.notes,
+        });
       } else {
-        await db.runAsync(
-          'INSERT INTO leads (lead_id, name, company_name, phone, email, source, stage, event_date, next_follow_up, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [formData.lead_id || null, finalName, finalCompanyName || null, normalizedPhone, gmailResult.email || null, formData.source, formData.stage, formData.event_date, formData.next_follow_up || null, formData.notes]
-        );
+        await leadsService.create({
+          lead_id: formData.lead_id || null,
+          name: finalName,
+          company_name: finalCompanyName || null,
+          phone: normalizedPhone,
+          email: gmailResult.email || null,
+          source: formData.source,
+          stage: formData.stage,
+          event_date: formData.event_date,
+          next_follow_up: formData.next_follow_up || null,
+          notes: formData.notes,
+        });
       }
       setModalVisible(false);
       setEditingLeadId(null);
@@ -641,8 +673,7 @@ export default function Leads() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            const db = getDatabase();
-            await db.runAsync('DELETE FROM leads WHERE id = ?', [id]);
+            await leadsService.delete(String(id));
             loadData();
           } catch (e) { Alert.alert('Error', 'Failed to delete'); }
         }}
@@ -657,14 +688,23 @@ export default function Leads() {
           const fileContent = await FileSystem.readAsStringAsync(fileUri, { encoding: 'base64' });
       const workbook = XLSX.read(fileContent, { type: 'base64' });
       const data: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
-      const db = getDatabase();
       let count = 0;
       for (const row of data) {
         const name = row.Name || row.name || '';
         const rawPhone = String(row.Phone || row.phone || '').replace(/\D/g, '').trim();
         if (!name || rawPhone.length !== 10) continue;
-        await db.runAsync('INSERT INTO leads (name, company_name, phone, email, source, event_type, budget, stage, event_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [name, row.Company || null, `+91${rawPhone}`, row.Email || null, row.Source || 'Excel', row.Type || null, row.Budget || 0, 'new', row.Date || format(new Date(), 'yyyy-MM-dd'), row.Notes || '']);
+                await leadsService.create({
+                  name,
+                  company_name: row.Company || null,
+                  phone: `+91${rawPhone}`,
+                  email: row.Email || null,
+                  source: row.Source || 'Excel',
+                  event_type: row.Type || null,
+                  budget: row.Budget || 0,
+                  stage: 'new',
+                  event_date: row.Date || format(new Date(), 'yyyy-MM-dd'),
+                  notes: row.Notes || '',
+                });
         count++;
       }
       loadData();

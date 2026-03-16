@@ -6,21 +6,23 @@ type ThemeMode = 'light' | 'dark';
 interface ThemeStore {
   mode: ThemeMode;
   colors: ThemeColors;
-  toggleTheme: () => void;
-  setTheme: (mode: ThemeMode) => void;
+  toggleTheme: () => Promise<void>;
+  setTheme: (mode: ThemeMode) => Promise<void>;
 }
 
 export const useThemeStore = create<ThemeStore>((set) => ({
   mode: 'dark',
   colors: colors.dark,
-  toggleTheme: () =>
+  toggleTheme: async () => {
     set((state) => ({
       mode: state.mode === 'dark' ? 'light' : 'dark',
       colors: state.mode === 'dark' ? colors.light : colors.dark,
-    })),
-  setTheme: (mode: ThemeMode) =>
+    }));
+  },
+  setTheme: async (mode: ThemeMode) => {
     set({
       mode,
       colors: colors[mode],
-    }),
+    });
+  },
 }));

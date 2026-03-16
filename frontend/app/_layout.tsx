@@ -3,7 +3,6 @@ import React, { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable, Platform, ActivityIndicator, useWindowDimensions, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { initDatabase } from '../src/database/db';
 import { useThemeStore } from '../src/store/themeStore';
 import { useMenuStore } from '../src/store/menuStore';
 import WebNotice from './web-notice';
@@ -196,22 +195,13 @@ function useProtectedRoute() {
 }
 
 export default function RootLayout() {
-  const [dbInitialized, setDbInitialized] = useState(false);
+  const [appReady, setAppReady] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const fadeAnim = useState(new Animated.Value(1))[0];
 
   useEffect(() => {
     async function setup() {
-      if (Platform.OS !== 'web') {
-        try {
-          await initDatabase();
-          setDbInitialized(true);
-        } catch (error) {
-          console.error("Failed to initialize database:", error);
-        }
-      } else {
-        setDbInitialized(true);
-      }
+      setAppReady(true);
 
       setTimeout(() => {
         Animated.timing(fadeAnim, {
@@ -228,7 +218,7 @@ export default function RootLayout() {
     return <WebNotice />;
   }
 
-  if (!dbInitialized) {
+  if (!appReady) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" />
@@ -245,7 +235,7 @@ export default function RootLayout() {
           <View style={styles.splashContent}>
             <Text style={styles.splashLogo}>V</Text>
             <Text style={styles.splashBrand}>VISYRA</Text>
-            {!dbInitialized && (
+            {!appReady && (
               <View style={styles.loaderContainer}>
                 <ActivityIndicator size="small" color="#fff" />
                 <Text style={styles.loaderText}>Syncing Engine...</Text>

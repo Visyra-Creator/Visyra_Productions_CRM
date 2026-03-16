@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as packagesService from '../src/api/services/packages';
 import { LinearGradient } from 'expo-linear-gradient';
 
 interface Package {
@@ -45,11 +45,11 @@ export default function EventPackages() {
 
   const loadPackages = async () => {
     try {
-      const db = getDatabase();
-      const result = await db.getAllAsync(
-        "SELECT * FROM packages WHERE event_type = 'Event' ORDER BY price ASC"
-      );
-      setPackages(result as Package[]);
+      const result = await packagesService.getAll();
+      const filtered = result
+        .filter((pkg) => pkg.event_type === 'Event')
+        .sort((a, b) => Number(a.price ?? 0) - Number(b.price ?? 0));
+      setPackages(filtered as Package[]);
     } catch (error) {
       console.error('Error loading event packages:', error);
     }
@@ -66,19 +66,15 @@ export default function EventPackages() {
     }
 
     try {
-      const db = getDatabase();
-      await db.runAsync(
-        'INSERT INTO packages (name, event_type, price, duration_hours, covers, deliverables, description) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [
-          formData.name,
-          formData.event_type,
-          parseFloat(formData.price),
-          parseInt(formData.duration_hours) || 0,
-          formData.covers,
-          formData.deliverables,
-          formData.description
-        ]
-      );
+      await packagesService.create({
+        name: formData.name,
+        event_type: formData.event_type,
+        price: parseFloat(formData.price),
+        duration_hours: parseInt(formData.duration_hours, 10) || 0,
+        covers: formData.covers,
+        deliverables: formData.deliverables,
+        description: formData.description,
+      });
 
       setIsModalVisible(false);
       setFormData({

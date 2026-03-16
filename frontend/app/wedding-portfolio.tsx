@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as portfolioService from '../src/api/services/portfolio';
 import * as DocumentPicker from 'expo-document-picker';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -275,11 +275,11 @@ export default function WeddingPortfolio() {
   const loadItems = async () => {
     setLoading(true);
     try {
-      const db = getDatabase();
-      const result = await db.getAllAsync(
-        "SELECT * FROM portfolio WHERE category = 'Wedding' ORDER BY created_at DESC"
-      );
-      setItems(result as PortfolioItem[]);
+      const result = await portfolioService.getAll();
+      const filtered = result
+        .filter((item) => item.category === 'Wedding')
+        .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+      setItems(filtered as PortfolioItem[]);
     } catch (e) {
       console.error(e);
     } finally {
@@ -309,7 +309,6 @@ export default function WeddingPortfolio() {
 
       if (!result.canceled) {
         setIsUploading(true);
-        const db = getDatabase();
 
         for (const asset of result.assets) {
           let finalUri = asset.uri;
@@ -342,16 +341,23 @@ export default function WeddingPortfolio() {
             const serverUrl = `${API_BASE_URL}${response.data.url}`;
             const thumbUrl = response.data.thumbnail_url ? `${API_BASE_URL}${response.data.thumbnail_url}` : null;
 
-            await db.runAsync(
-              'INSERT INTO portfolio (title, media_type, file_path, thumbnail_path, category, featured) VALUES (?, ?, ?, ?, ?, ?)',
-              [asset.name, activeTab, serverUrl, thumbUrl, 'Wedding', 0]
-            );
+            await portfolioService.create({
+              title: asset.name,
+              media_type: activeTab,
+              file_path: serverUrl,
+              thumbnail_path: thumbUrl,
+              category: 'Wedding',
+              featured: 0,
+            });
           } catch (uploadErr) {
             console.log("Server upload failed, using local storage fallback", uploadErr);
-            await db.runAsync(
-              'INSERT INTO portfolio (title, media_type, file_path, category, featured) VALUES (?, ?, ?, ?, ?)',
-              [asset.name, activeTab, finalUri, 'Wedding', 0]
-            );
+            await portfolioService.create({
+              title: asset.name,
+              media_type: activeTab,
+              file_path: finalUri,
+              category: 'Wedding',
+              featured: 0,
+            });
           }
         }
 
@@ -368,8 +374,7 @@ export default function WeddingPortfolio() {
 
   const toggleFeatured = useCallback(async (item: PortfolioItem) => {
     try {
-      const db = getDatabase();
-      await db.runAsync('UPDATE portfolio SET featured = ? WHERE id = ?', [item.featured ? 0 : 1, item.id]);
+      await portfolioService.update(String(item.id), { featured: item.featured ? 0 : 1 });
       loadItems();
     } catch (e) {
       console.error(e);
@@ -381,8 +386,7 @@ export default function WeddingPortfolio() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
         try {
-          const db = getDatabase();
-          await db.runAsync('DELETE FROM portfolio WHERE id = ?', [id]);
+          await portfolioService.delete(String(id));
           loadItems();
           setActiveItemActions(null);
         } catch (e) { console.error(e); }

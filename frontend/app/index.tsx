@@ -15,12 +15,18 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase, initDatabase } from '../src/database/db';
+import * as shootsService from '../src/api/services/shoots';
+import * as leadsService from '../src/api/services/leads';
+import * as clientsService from '../src/api/services/clients';
+import * as paymentsService from '../src/api/services/payments';
+import * as paymentRecordsService from '../src/api/services/paymentRecords';
+import * as expensesService from '../src/api/services/expenses';
+import * as portfolioService from '../src/api/services/portfolio';
 import { format } from 'date-fns';
 import { Image } from 'expo-image';
 
 interface TimelineItem {
-  id: number;
+  id: string | number;
   type: 'shoot' | 'payment' | 'lead' | 'client';
   title: string;
   subtitle: string;
@@ -29,7 +35,7 @@ interface TimelineItem {
 }
 
 interface PortfolioImage {
-  id: number;
+  id: string | number;
   image_path: string;
   portfolio_title: string;
   category: string;
@@ -43,6 +49,7 @@ export default function Dashboard() {
 
   const [refreshing, setRefreshing] = useState(false);
   const [dbReady, setDbReady] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [todayCardWidth, setTodayCardWidth] = useState(0);
   const [followUpCardWidth, setFollowUpCardWidth] = useState(0);
 
@@ -86,180 +93,140 @@ export default function Dashboard() {
   );
 
   const loadData = async () => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
+    setLoading(true);
 
     try {
-      let db;
-      try {
-        db = getDatabase();
-      } catch (e) {
-        db = await initDatabase();
-      }
-
-      if (!db) {
-        setDbReady(false);
-        loadingRef.current = false;
-        return;
-      }
-
+      console.log('[Dashboard] Starting data load...');
       setDbReady(true);
 
-      // Load Stats
-      const shootsCount: any = await db.getAllAsync("SELECT COUNT(*) as count FROM shoots WHERE status = 'upcoming'");
-      const leadsCount: any = await db.getAllAsync("SELECT COUNT(*) as count FROM leads");
-      const clientsCount: any = await db.getAllAsync("SELECT COUNT(*) as count FROM clients");
-      const paymentsCount: any = await db.getAllAsync("SELECT COUNT(*) as count FROM payments WHERE status IN ('pending', 'partial')");
-      const balanceResult: any = await db.getAllAsync("SELECT SUM(balance) as total FROM payments WHERE status IN ('pending', 'partial')");
-      const revenueResult: any = await db.getAllAsync(
-        `SELECT SUM(amount) as total FROM payment_records 
-         WHERE strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')`
-      );
-      const expensesResult: any = await db.getAllAsync(
-        `SELECT SUM(amount) as total FROM expenses
-         WHERE strftime('%Y-%m', date) = strftime('%Y-%m', 'now')`
-      );
+      const now = new Date();
+      const todayStr = format(now, 'yyyy-MM-dd');
+      const monthPrefix = format(now, 'yyyy-MM');
 
-      // Load Today's Shoots
-      const todayShootsResult: any = await db.getAllAsync(
-        `SELECT shoots.*, clients.name as client_name
-         FROM shoots
-         LEFT JOIN clients ON shoots.client_id = clients.id
-         WHERE date(shoots.shoot_date) = date('now')`
-      );
+      console.log('[Dashboard] Fetching data from Supabase...');
+      const [shoots, leads, clients, payments, paymentRecords, expenses, portfolio] = await Promise.all([
+        shootsService.getAll(),
+        leadsService.getAll(),
+        clientsService.getAll(),
+        paymentsService.getAll(),
+        paymentRecordsService.getAll(),
+        expensesService.getAll(),
+        portfolioService.getAll(),
+      ]);
 
-      // Load Overdue Shoots (missed shoots)
-      const overdueShootsResult: any = await db.getAllAsync(
-        `SELECT shoots.*, clients.name as client_name
-         FROM shoots
-         LEFT JOIN clients ON shoots.client_id = clients.id
-         WHERE date(shoots.shoot_date) < date('now') AND shoots.status != 'completed'
-         ORDER BY shoots.shoot_date DESC
-         LIMIT 4`
-      );
-
-      // Load Today's Follow Ups
-      const todayFollowUpsResult: any = await db.getAllAsync(
-        `SELECT * FROM leads
-         WHERE date(next_follow_up) = date('now')`
-      );
-
-      // Load Overdue Leads (missed follow-ups)
-      const overdueLeadsResult: any = await db.getAllAsync(
-        `SELECT * FROM leads
-         WHERE date(next_follow_up) < date('now')
-         ORDER BY next_follow_up DESC
-         LIMIT 4`
-      );
-
-      // Load Today's Client Follow Ups
-      const todayClientFollowUpsResult: any = await db.getAllAsync(
-        `SELECT clients.*, clients.name as client_name
-         FROM clients
-         WHERE date(next_follow_up) = date('now')`
-      );
-
-      // Load Overdue Client Follow-ups
-      const overdueClientFollowUpsResult: any = await db.getAllAsync(
-        `SELECT clients.*, clients.name as client_name
-         FROM clients
-         WHERE date(next_follow_up) < date('now')
-         ORDER BY next_follow_up DESC
-         LIMIT 4`
-      );
-
-      // Load Today's Payments
-      const todayPaymentsResult: any = await db.getAllAsync(
-        `SELECT payments.*, clients.name as client_name
-         FROM payments
-         LEFT JOIN clients ON payments.client_id = clients.id
-         WHERE date(payments.payment_date) = date('now') AND payments.status != 'paid'`
-      );
-
-      // Load Overdue Payments
-      const overduePaymentsResult: any = await db.getAllAsync(
-        `SELECT payments.*, clients.name as client_name
-         FROM payments
-         LEFT JOIN clients ON payments.client_id = clients.id
-         WHERE date(payments.payment_date) < date('now') AND payments.status != 'paid'
-         ORDER BY payments.payment_date DESC
-         LIMIT 4`
-      );
-      
-      const revenue = revenueResult[0]?.total || 0;
-      const expenses = expensesResult[0]?.total || 0;
-
-      setStats({
-        upcomingShoots: shootsCount[0]?.count || 0,
-        totalLeads: leadsCount[0]?.count || 0,
-        totalClients: clientsCount[0]?.count || 0,
-        pendingPayments: paymentsCount[0]?.count || 0,
-        outstandingBalance: balanceResult[0]?.total || 0,
-        monthlyRevenue: revenue,
-        totalExpenses: expenses,
-        monthlyProfit: revenue - expenses,
-        todaysShoots: todayShootsResult || [],
-        todaysFollowUps: todayFollowUpsResult || [],
-        todaysClientFollowUps: todayClientFollowUpsResult || [],
-        todaysPayments: todayPaymentsResult || [],
-        overdueShoots: overdueShootsResult || [],
-        overdueLeads: overdueLeadsResult || [],
-        overdueClientFollowUps: overdueClientFollowUpsResult || [],
-        overduePayments: overduePaymentsResult || [],
+      console.log('[Dashboard] Supabase data received:', {
+        shoots: shoots.length,
+        leads: leads.length,
+        clients: clients.length,
+        payments: payments.length,
+        paymentRecords: paymentRecords.length,
+        expenses: expenses.length,
+        portfolio: portfolio.length,
       });
 
-      // Load Timeline
-      const timeline: TimelineItem[] = [];
-      const upcomingShoots: any = await db.getAllAsync(
-        `SELECT shoots.*, clients.name as client_name
-         FROM shoots
-         LEFT JOIN clients ON shoots.client_id = clients.id
-         WHERE shoots.shoot_date >= date('now')
-         ORDER BY shoots.shoot_date ASC LIMIT 10`
-      );
+      const clientsById = new Map(clients.map((c: any) => [String(c.id), c]));
+      const withClientName = (row: any) => ({ ...row, client_name: clientsById.get(String(row.client_id))?.name ?? null });
 
-      upcomingShoots.forEach((s: any) => {
-        try {
+      const todayShoots = shoots.filter((s: any) => s.shoot_date === todayStr).map(withClientName);
+      const overdueShoots = [...shoots]
+        .filter((s: any) => s.shoot_date && s.shoot_date < todayStr && s.status !== 'completed')
+        .sort((a: any, b: any) => String(b.shoot_date).localeCompare(String(a.shoot_date)))
+        .slice(0, 4)
+        .map(withClientName);
+
+      const todayFollowUps = leads.filter((l: any) => l.next_follow_up === todayStr);
+      const overdueLeads = [...leads]
+        .filter((l: any) => l.next_follow_up && l.next_follow_up < todayStr)
+        .sort((a: any, b: any) => String(b.next_follow_up).localeCompare(String(a.next_follow_up)))
+        .slice(0, 4);
+
+      const todayClientFollowUps = clients.filter((c: any) => c.next_follow_up === todayStr).map((c: any) => ({ ...c, client_name: c.name }));
+      const overdueClientFollowUps = [...clients]
+        .filter((c: any) => c.next_follow_up && c.next_follow_up < todayStr)
+        .sort((a: any, b: any) => String(b.next_follow_up).localeCompare(String(a.next_follow_up)))
+        .slice(0, 4)
+        .map((c: any) => ({ ...c, client_name: c.name }));
+
+      const todayPayments = payments.filter((p: any) => p.payment_date === todayStr && p.status !== 'paid').map(withClientName);
+      const overduePayments = [...payments]
+        .filter((p: any) => p.payment_date && p.payment_date < todayStr && p.status !== 'paid')
+        .sort((a: any, b: any) => String(b.payment_date).localeCompare(String(a.payment_date)))
+        .slice(0, 4)
+        .map(withClientName);
+
+      const pendingPayments = payments.filter((p: any) => ['pending', 'partial'].includes(String(p.status)));
+      const outstandingBalance = pendingPayments.reduce((sum: number, p: any) => sum + Number(p.balance || 0), 0);
+      const monthlyRevenue = paymentRecords
+        .filter((r: any) => String(r.payment_date || '').startsWith(monthPrefix))
+        .reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0);
+      const totalExpenses = expenses
+        .filter((e: any) => String(e.date || '').startsWith(monthPrefix))
+        .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+
+      console.log('[Dashboard] Processed stats:', {
+        totalClients: clients.length,
+        totalLeads: leads.length,
+        totalShoots: shoots.length,
+        monthlyRevenue,
+        totalExpenses,
+      });
+
+      setStats({
+        upcomingShoots: shoots.filter((s: any) => s.status === 'upcoming').length,
+        totalLeads: leads.length,
+        totalClients: clients.length,
+        pendingPayments: pendingPayments.length,
+        outstandingBalance,
+        monthlyRevenue,
+        totalExpenses,
+        monthlyProfit: monthlyRevenue - totalExpenses,
+        todaysShoots: todayShoots,
+        todaysFollowUps: todayFollowUps,
+        todaysClientFollowUps: todayClientFollowUps,
+        todaysPayments: todayPayments,
+        overdueShoots,
+        overdueLeads,
+        overdueClientFollowUps,
+        overduePayments,
+      });
+
+      const timeline: TimelineItem[] = [];
+
+      [...shoots]
+        .filter((s: any) => s.shoot_date && s.shoot_date >= todayStr)
+        .sort((a: any, b: any) => String(a.shoot_date).localeCompare(String(b.shoot_date)))
+        .slice(0, 10)
+        .forEach((s: any) => {
           timeline.push({
             id: s.id,
             type: 'shoot',
-            title: `${s.event_type || 'Photoshoot'} - ${s.client_name}`,
+            title: `${s.event_type || 'Photoshoot'} - ${clientsById.get(String(s.client_id))?.name || '-'}`,
             subtitle: s.location || 'Location TBD',
             date: new Date(s.shoot_date),
             status: s.status,
           });
-        } catch (e) {}
-      });
+        });
 
-      const upcomingPayments: any = await db.getAllAsync(
-        `SELECT payments.*, clients.name as client_name
-         FROM payments
-         LEFT JOIN clients ON payments.client_id = clients.id
-         WHERE payments.status != 'paid' AND payments.payment_date >= date('now')
-         ORDER BY payments.payment_date ASC LIMIT 5`
-      );
-
-      upcomingPayments.forEach((p: any) => {
-        try {
+      [...payments]
+        .filter((p: any) => p.status !== 'paid' && p.payment_date && p.payment_date >= todayStr)
+        .sort((a: any, b: any) => String(a.payment_date).localeCompare(String(b.payment_date)))
+        .slice(0, 5)
+        .forEach((p: any) => {
           timeline.push({
             id: p.id,
             type: 'payment',
-            title: `Payment Due - ${p.client_name}`,
-            subtitle: `Amount: ₹${p.total_amount?.toLocaleString() || 0}`,
+            title: `Payment Due - ${clientsById.get(String(p.client_id))?.name || '-'}`,
+            subtitle: `Amount: Rs${Number(p.total_amount || 0).toLocaleString()}`,
             date: new Date(p.payment_date),
             status: p.status,
           });
-        } catch (e) {}
-      });
+        });
 
-      const upcomingFollowUps: any = await db.getAllAsync(
-        `SELECT * FROM leads
-         WHERE next_follow_up >= date('now')
-         ORDER BY next_follow_up ASC LIMIT 10`
-      );
-
-      upcomingFollowUps.forEach((l: any) => {
-        try {
+      [...leads]
+        .filter((l: any) => l.next_follow_up && l.next_follow_up >= todayStr)
+        .sort((a: any, b: any) => String(a.next_follow_up).localeCompare(String(b.next_follow_up)))
+        .slice(0, 10)
+        .forEach((l: any) => {
           timeline.push({
             id: l.id,
             type: 'lead',
@@ -268,65 +235,45 @@ export default function Dashboard() {
             date: new Date(l.next_follow_up),
             status: 'pending',
           });
-        } catch (e) {}
-      });
+        });
 
-      // Load Client Follow Ups for Timeline
-      const upcomingClientFollowUps: any = await db.getAllAsync(
-        `SELECT * FROM clients
-         WHERE next_follow_up IS NOT NULL AND next_follow_up >= date('now')
-         ORDER BY next_follow_up ASC LIMIT 10`
-      );
-
-      console.log('Client follow-ups data:', upcomingClientFollowUps);
-      console.log('Stats todaysClientFollowUps:', stats.todaysClientFollowUps);
-
-      upcomingClientFollowUps.forEach((c: any) => {
-        try {
-          console.log('Processing client follow-up:', c);
-          const followUpDate = new Date(c.next_follow_up);
-          console.log('Parsed date:', followUpDate, 'ISO:', followUpDate.toISOString());
-          
+      [...clients]
+        .filter((c: any) => c.next_follow_up && c.next_follow_up >= todayStr)
+        .sort((a: any, b: any) => String(a.next_follow_up).localeCompare(String(b.next_follow_up)))
+        .slice(0, 10)
+        .forEach((c: any) => {
           timeline.push({
             id: c.id,
             type: 'client',
             title: `Client Follow Up - ${c.name}`,
             subtitle: c.event_type || 'Client',
-            date: followUpDate,
+            date: new Date(c.next_follow_up),
             status: 'pending',
           });
-        } catch (e) {
-          console.error('Error processing client follow-up:', e, c);
-        }
-      });
+        });
 
       setTimelineData(timeline.sort((a, b) => a.date.getTime() - b.date.getTime()));
 
-      // Load exactly 5 Recent Portfolio Images
-      try {
-        const portfolioImages: any = await db.getAllAsync(
-          `SELECT id, file_path as image_path, title as portfolio_title, category
-           FROM portfolio
-           WHERE media_type = 'image'
-           ORDER BY created_at DESC
-           LIMIT 5`
-        );
-        setRecentPortfolio(portfolioImages as PortfolioImage[]);
-      } catch (e) {
-        console.warn('Portfolio table error:', e);
-      }
+      const recentImages = [...portfolio]
+        .filter((p: any) => p.media_type === 'image')
+        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+        .slice(0, 5)
+        .map((p: any) => ({
+          id: p.id,
+          image_path: p.file_path,
+          portfolio_title: p.title,
+          category: p.category,
+        }));
 
+      setRecentPortfolio(recentImages as PortfolioImage[]);
+      console.log('[Dashboard] Data load completed successfully');
     } catch (error) {
-      console.error('Error loading dashboard data:', error);
+      console.error('[Dashboard] Error loading dashboard data:', error);
       setDbReady(false);
-      setTimeout(() => {
-        loadingRef.current = false;
-        loadData();
-      }, 1000);
-      return;
+    } finally {
+      console.log('[Dashboard] Releasing loading lock');
+      setLoading(false);
     }
-
-    loadingRef.current = false;
   };
 
   useFocusEffect(
@@ -471,7 +418,7 @@ export default function Dashboard() {
     </TouchableOpacity>
   );
 
-  if (!dbReady) {
+  if (loading) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color={colors.primary} />

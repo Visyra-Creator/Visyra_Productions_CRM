@@ -16,7 +16,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as shootsService from '../src/api/services/shoots';
+import * as clientsService from '../src/api/services/clients';
+import * as appOptionsService from '../src/api/services/appOptions';
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, startOfWeek, endOfWeek, isToday, isSameDay, isSameWeek, addDays, subDays, addWeeks, subWeeks, startOfDay, endOfDay, isWithinInterval, setHours, setMinutes } from 'date-fns';
 import { LinearGradient } from 'expo-linear-gradient';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -90,34 +92,43 @@ export default function Shoots() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const db = getDatabase();
-
       // Seed default shoot statuses if they don't exist
-      const existingStatuses = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'shoot_status'");
+      const allOptions = await appOptionsService.getAll();
+      const existingStatuses = allOptions.filter((option) => option.type === 'shoot_status');
       if (existingStatuses.length === 0) {
         for (const status of SHOOT_STATUSES_DEFAULTS) {
-          await db.runAsync(
-            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
-            ['shoot_status', status.label, status.value]
-          );
+          await appOptionsService.create({ type: 'shoot_status', label: status.label, value: status.value });
         }
       }
 
-      const [shootResult, clientResult, typesResult, statusResult] = await Promise.all([
-        db.getAllAsync(
-          `SELECT shoots.*, clients.name as client_name
-           FROM shoots
-           LEFT JOIN clients ON shoots.client_id = clients.id
-           ORDER BY shoots.shoot_date ASC`
-        ),
-        db.getAllAsync('SELECT id, name FROM clients ORDER BY name'),
-        db.getAllAsync("SELECT * FROM app_options WHERE type = 'event_type' ORDER BY label ASC"),
-        db.getAllAsync("SELECT * FROM app_options WHERE type = 'shoot_status' ORDER BY id ASC")
+      const [shootResult, clientResult, latestOptions] = await Promise.all([
+        shootsService.getAll(),
+        clientsService.getAll(),
+        appOptionsService.getAll(),
       ]);
-      setShoots(shootResult as Shoot[]);
-      setClients(clientResult);
-      setEventTypes(typesResult as AppOption[]);
-      setShootStatuses(statusResult as AppOption[]);
+
+      const clientsById = new Map(clientResult.map((client: any) => [String(client.id), client]));
+      const shootsWithClient = shootResult
+        .map((shoot: any) => ({
+          ...shoot,
+          client_name: clientsById.get(String(shoot.client_id))?.name ?? '',
+        }))
+        .sort((a: any, b: any) => String(a.shoot_date ?? '').localeCompare(String(b.shoot_date ?? '')));
+
+      setShoots(shootsWithClient as Shoot[]);
+      setClients(
+        [...clientResult].sort((a: any, b: any) => String(a.name ?? '').localeCompare(String(b.name ?? '')))
+      );
+      setEventTypes(
+        latestOptions
+          .filter((option) => option.type === 'event_type')
+          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+      );
+      setShootStatuses(
+        latestOptions
+          .filter((option) => option.type === 'shoot_status')
+          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
+      );
     } catch (error) {
       console.error('Error loading shoots data:', error);
     } finally {
@@ -250,8 +261,7 @@ export default function Shoots() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const db = getDatabase();
-              await db.runAsync('DELETE FROM shoots WHERE id = ?', [id]);
+              await shootsService.delete(String(id));
               loadData();
               Alert.alert('Success', 'Shoot deleted successfully');
               // Close modal after deletion to prevent reappearing
@@ -272,37 +282,29 @@ export default function Shoots() {
       return;
     }
     try {
-      const db = getDatabase();
       if (editingShoot) {
-        await db.runAsync(
-          'UPDATE shoots SET client_id = ?, event_type = ?, shoot_date = ?, start_time = ?, end_time = ?, location = ?, notes = ?, status = ? WHERE id = ?',
-          [
-            formData.client_id,
-            formData.event_type,
-            format(formData.shoot_date, 'yyyy-MM-dd'),
-            format(formData.start_time, 'hh:mm a'),
-            formData.end_time ? format(formData.end_time, 'hh:mm a') : '',
-            formData.location,
-            formData.notes,
-            formData.status,
-            editingShoot.id
-          ]
-        );
+        await shootsService.update(String(editingShoot.id), {
+          client_id: formData.client_id,
+          event_type: formData.event_type,
+          shoot_date: format(formData.shoot_date, 'yyyy-MM-dd'),
+          start_time: format(formData.start_time, 'hh:mm a'),
+          end_time: formData.end_time ? format(formData.end_time, 'hh:mm a') : '',
+          location: formData.location,
+          notes: formData.notes,
+          status: formData.status,
+        });
         Alert.alert('Success', 'Shoot updated successfully');
       } else {
-        await db.runAsync(
-          'INSERT INTO shoots (client_id, event_type, shoot_date, start_time, end_time, location, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [
-            formData.client_id,
-            formData.event_type,
-            format(formData.shoot_date, 'yyyy-MM-dd'),
-            format(formData.start_time, 'hh:mm a'),
-            formData.end_time ? format(formData.end_time, 'hh:mm a') : '',
-            formData.location,
-            formData.notes,
-            formData.status
-          ]
-        );
+        await shootsService.create({
+          client_id: formData.client_id,
+          event_type: formData.event_type,
+          shoot_date: format(formData.shoot_date, 'yyyy-MM-dd'),
+          start_time: format(formData.start_time, 'hh:mm a'),
+          end_time: formData.end_time ? format(formData.end_time, 'hh:mm a') : '',
+          location: formData.location,
+          notes: formData.notes,
+          status: formData.status,
+        });
         Alert.alert('Success', 'Shoot scheduled successfully');
       }
       // Reset form state after successful save
