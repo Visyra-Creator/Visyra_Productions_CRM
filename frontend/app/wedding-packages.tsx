@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import * as packagesService from '../src/api/services/packages';
 import { LinearGradient } from 'expo-linear-gradient';
-import { colors } from '@/src/theme/colors';
+import { colors } from '@/theme/colors';
 
 interface Package {
   id: number;

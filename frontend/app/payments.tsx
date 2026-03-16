@@ -28,6 +28,7 @@ import { format, parseISO, isSameDay, isSameWeek, isSameMonth, isBefore, isWithi
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useAuthStore } from '../src/store/authStore';
 
 interface Invoice {
   id: number;
@@ -89,6 +90,20 @@ export default function Payments() {
   const isTablet = width > 768;
   const { colors } = useThemeStore();
   const router = useRouter();
+  const { role } = useAuthStore();
+
+  // ── Role Guard ─────────────────────────────────────────────────────────────
+  // Must be evaluated before any data-fetching effects run.
+  useEffect(() => {
+    if (role !== null && role !== 'admin') {
+      router.replace('/');
+    }
+  }, [role, router]);
+
+  if (role !== null && role !== 'admin') {
+    return null; // render nothing while redirect happens
+  }
+  // ──────────────────────────────────────────────────────────────────────────
   const params = useLocalSearchParams();
   const navigationParamsProcessed = useRef(false);
 
