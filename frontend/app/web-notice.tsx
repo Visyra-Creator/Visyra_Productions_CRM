@@ -7,7 +7,7 @@ export default function WebNotice() {
     <View style={styles.container}>
       <Text style={styles.title}>Visyra CRM</Text>
       <Text style={styles.message}>
-        This app is designed for Android tablets and uses local SQLite database.
+        This app is designed for Android tablets and uses Supabase for cloud data.
       </Text>
       <Text style={styles.submessage}>
         Please use Expo Go on your Android device or build the APK to experience the full app.

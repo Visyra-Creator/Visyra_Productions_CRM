@@ -18,7 +18,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as locationsService from '../src/api/services/locations';
+import * as locationImagesService from '../src/api/services/locationImages';
 import * as DocumentPicker from 'expo-document-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -102,10 +103,11 @@ export default function LocationGalleryPage() {
 
   const loadLocations = async () => {
     try {
-      const db = getDatabase();
-      const locs = await db.getAllAsync('SELECT * FROM locations ORDER BY name ASC');
+      const locs = (await locationsService.getAll())
+        .sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
+      const allImages = await locationImagesService.getAll();
       const locationsWithImages = await Promise.all(locs.map(async (loc: any) => {
-        const imgs = await db.getAllAsync('SELECT image_path FROM location_images WHERE location_id = ?', [loc.id]);
+        const imgs = allImages.filter((img: any) => img.location_id === loc.id);
         return { ...loc, images: imgs.map((i: any) => i.image_path) };
       }));
       setLocations(locationsWithImages as Location[]);
@@ -189,25 +191,42 @@ export default function LocationGalleryPage() {
       return;
     }
 
-    const db = getDatabase();
     try {
       if (editingLocation) {
-        await db.runAsync(
-          `UPDATE locations SET name=?, type=?, city=?, is_paid=?, price=?, address=?, venue_name=?, landmark=?, google_maps_url=?, notes=? WHERE id=?`,
-          [formData.name, formData.type, formData.city, formData.is_paid ? 1 : 0, parseFloat(formData.price) || 0, formData.address, formData.venue_name, formData.landmark, formData.google_maps_url, formData.notes, editingLocation.id]
-        );
-        await db.runAsync('DELETE FROM location_images WHERE location_id = ?', [editingLocation.id]);
+        await locationsService.update(String(editingLocation.id), {
+          name: formData.name,
+          type: formData.type,
+          city: formData.city,
+          is_paid: formData.is_paid ? 1 : 0,
+          price: parseFloat(formData.price) || 0,
+          address: formData.address,
+          venue_name: formData.venue_name,
+          landmark: formData.landmark,
+          google_maps_url: formData.google_maps_url,
+          notes: formData.notes,
+        });
+        const allImages = await locationImagesService.getAll();
+        const existing = allImages.filter((img: any) => img.location_id === editingLocation.id);
+        await Promise.all(existing.map((img: any) => locationImagesService.delete(String(img.id))));
         for (const img of formData.images) {
-          await db.runAsync('INSERT INTO location_images (location_id, image_path) VALUES (?, ?)', [editingLocation.id, img]);
+          await locationImagesService.create({ location_id: editingLocation.id, image_path: img });
         }
       } else {
-        const result = await db.runAsync(
-          `INSERT INTO locations (name, type, city, is_paid, price, address, venue_name, landmark, google_maps_url, notes) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-          [formData.name, formData.type, formData.city, formData.is_paid ? 1 : 0, parseFloat(formData.price) || 0, formData.address, formData.venue_name, formData.landmark, formData.google_maps_url, formData.notes]
-        );
-        const newId = result.lastInsertRowId;
+        const result: any = await locationsService.create({
+          name: formData.name,
+          type: formData.type,
+          city: formData.city,
+          is_paid: formData.is_paid ? 1 : 0,
+          price: parseFloat(formData.price) || 0,
+          address: formData.address,
+          venue_name: formData.venue_name,
+          landmark: formData.landmark,
+          google_maps_url: formData.google_maps_url,
+          notes: formData.notes,
+        });
+        const newId = result.id;
         for (const img of formData.images) {
-          await db.runAsync('INSERT INTO location_images (location_id, image_path) VALUES (?, ?)', [newId, img]);
+          await locationImagesService.create({ location_id: newId, image_path: img });
         }
       }
       setEditModalVisible(false);

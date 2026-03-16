@@ -18,7 +18,12 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as paymentsService from '../src/api/services/payments';
+import * as paymentRecordsService from '../src/api/services/paymentRecords';
+import * as clientsService from '../src/api/services/clients';
+import * as shootsService from '../src/api/services/shoots';
+import * as appOptionsService from '../src/api/services/appOptions';
+import * as expensesService from '../src/api/services/expenses';
 import { format, parseISO, isSameDay, isSameWeek, isSameMonth, isBefore, isWithinInterval, startOfMonth, endOfMonth, isAfter } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -150,35 +155,50 @@ export default function Payments() {
 
   const loadData = useCallback(async () => {
     try {
-      const db = getDatabase();
-      if (!db) { setDbReady(false); return; }
       setDbReady(true);
       setLoading(true);
 
       // Seed default payment methods if they don't exist
-      const existingMethods = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'payment_method'");
+      const options = await appOptionsService.getAll();
+      const existingMethods = options.filter((option) => option.type === 'payment_method');
       if (existingMethods.length === 0) {
         for (const method of PAYMENT_METHODS_DEFAULTS) {
-          await db.runAsync(
-            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
-            ['payment_method', method.label, method.value]
-          );
+          await appOptionsService.create({ type: 'payment_method', label: method.label, value: method.value });
         }
       }
 
-      const [inv, pr, c, s, methods] = await Promise.all([
-        db.getAllAsync(`SELECT p.*, c.name as client_name, s.event_type FROM payments p LEFT JOIN clients c ON p.client_id = c.id LEFT JOIN shoots s ON p.shoot_id = s.id ORDER BY p.created_at DESC`),
-        db.getAllAsync('SELECT * FROM payment_records ORDER BY payment_date DESC'),
-        db.getAllAsync('SELECT id, name FROM clients ORDER BY name'),
-        db.getAllAsync('SELECT id, client_id, event_type FROM shoots'),
-        db.getAllAsync("SELECT id, label FROM app_options WHERE type = 'payment_method' ORDER BY label ASC")
+      const [inv, pr, c, s, allOptions] = await Promise.all([
+        paymentsService.getAll(),
+        paymentRecordsService.getAll(),
+        clientsService.getAll(),
+        shootsService.getAll(),
+        appOptionsService.getAll(),
       ]);
 
-      setInvoices(inv as Invoice[]);
-      setPaymentRecords(pr as PaymentRecord[]);
-      setClients(c as Client[]);
+      const clientsById = new Map(c.map((client: any) => [String(client.id), client]));
+      const shootsById = new Map(s.map((shoot: any) => [String(shoot.id), shoot]));
+
+      const invoicesWithRelations = [...inv]
+        .map((payment: any) => ({
+          ...payment,
+          client_name: clientsById.get(String(payment.client_id))?.name ?? null,
+          event_type: shootsById.get(String(payment.shoot_id))?.event_type ?? null,
+        }))
+        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+
+      setInvoices(invoicesWithRelations as Invoice[]);
+      setPaymentRecords(
+        [...pr].sort((a: any, b: any) => String(b.payment_date ?? '').localeCompare(String(a.payment_date ?? ''))) as PaymentRecord[]
+      );
+      setClients(
+        [...c].sort((a: any, b: any) => String(a.name ?? '').localeCompare(String(b.name ?? ''))) as Client[]
+      );
       setShoots(s as Shoot[]);
-      setPaymentMethods(methods as AppOption[]);
+      setPaymentMethods(
+        allOptions
+          .filter((option) => option.type === 'payment_method')
+          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+      );
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
@@ -256,8 +276,7 @@ export default function Payments() {
 
   const loadExpenses = useCallback(async () => {
     try {
-      const db = getDatabase();
-      const expResult = await db.getAllAsync('SELECT * FROM expenses');
+      const expResult = await expensesService.getAll();
       setExpenses(expResult as any[]);
     } catch (error) {
       console.error('Error loading expenses:', error);
@@ -381,30 +400,37 @@ export default function Payments() {
     if (!formData.total_amount || isNaN(parseFloat(formData.total_amount))) { Alert.alert('Error', 'Please enter a valid amount'); return; }
 
     try {
-      const db = getDatabase();
       const { client_id, shoot_id, total_amount, due_date, present_date, first_paid_amount, payment_method, payment_title } = formData;
       const total = parseFloat(total_amount);
       const paidAmount = first_paid_amount ? parseFloat(first_paid_amount) : 0;
 
       if (editingInvoice) {
         // Only update invoice details, don't touch payment records
-        await db.runAsync(
-          `UPDATE payments SET client_id=?, shoot_id=?, total_amount=?, due_date=? WHERE id=?`,
-          [parseInt(client_id), shoot_id, total, format(due_date, 'yyyy-MM-dd'), editingInvoice.id]
-        );
+        await paymentsService.update(String(editingInvoice.id), {
+          client_id,
+          shoot_id,
+          total_amount: total,
+          due_date: format(due_date, 'yyyy-MM-dd'),
+        });
       } else {
         // Create new invoice
-        const result = await db.runAsync(
-          `INSERT INTO payments (client_id, shoot_id, total_amount, due_date, payment_date) VALUES (?,?,?,?,?)`,
-          [parseInt(client_id), shoot_id, total, format(due_date, 'yyyy-MM-dd'), format(new Date(), 'yyyy-MM-dd')]
-        );
+        const result: any = await paymentsService.create({
+          client_id,
+          shoot_id,
+          total_amount: total,
+          due_date: format(due_date, 'yyyy-MM-dd'),
+          payment_date: format(new Date(), 'yyyy-MM-dd'),
+        });
 
         // Create first payment record if amount is provided
-        if (paidAmount > 0 && result?.lastInsertRowId) {
-          await db.runAsync(
-            `INSERT INTO payment_records (invoice_id, amount, payment_date, payment_method, notes) VALUES (?,?,?,?,?)`,
-            [result.lastInsertRowId, paidAmount, format(present_date, 'yyyy-MM-dd'), payment_method, payment_title]
-          );
+        if (paidAmount > 0 && result?.id) {
+          await paymentRecordsService.create({
+            invoice_id: result.id,
+            amount: paidAmount,
+            payment_date: format(present_date, 'yyyy-MM-dd'),
+            payment_method,
+            notes: payment_title,
+          });
         }
       }
 
@@ -438,22 +464,26 @@ export default function Payments() {
     }
 
     try {
-      const db = getDatabase();
       const amount = parseFloat(paymentFormData.amount);
 
       if (editingPaymentRecord) {
         // Update existing payment record
-        await db.runAsync(
-          `UPDATE payment_records SET amount = ?, payment_date = ?, payment_method = ?, notes = ? WHERE id = ?`,
-          [amount, format(paymentFormData.payment_date, 'yyyy-MM-dd'), paymentFormData.payment_method, paymentFormData.notes, editingPaymentRecord.id]
-        );
+        await paymentRecordsService.update(String(editingPaymentRecord.id), {
+          amount,
+          payment_date: format(paymentFormData.payment_date, 'yyyy-MM-dd'),
+          payment_method: paymentFormData.payment_method,
+          notes: paymentFormData.notes,
+        });
         Alert.alert('Success', 'Payment updated successfully');
       } else if (selectedInvoiceForPayment) {
         // Create new payment record
-        await db.runAsync(
-          `INSERT INTO payment_records (invoice_id, amount, payment_date, payment_method, notes) VALUES (?,?,?,?,?)`,
-          [selectedInvoiceForPayment.id, amount, format(paymentFormData.payment_date, 'yyyy-MM-dd'), paymentFormData.payment_method, paymentFormData.notes]
-        );
+        await paymentRecordsService.create({
+          invoice_id: selectedInvoiceForPayment.id,
+          amount,
+          payment_date: format(paymentFormData.payment_date, 'yyyy-MM-dd'),
+          payment_method: paymentFormData.payment_method,
+          notes: paymentFormData.notes,
+        });
         Alert.alert('Success', 'Payment recorded successfully');
       }
 
@@ -482,8 +512,7 @@ export default function Payments() {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDatabase();
-            await db.runAsync('DELETE FROM payment_records WHERE id = ?', [recordId]);
+            await paymentRecordsService.delete(String(recordId));
             loadData();
           } catch (error) {
             Alert.alert('Error', 'Failed to delete payment');
@@ -521,8 +550,7 @@ export default function Payments() {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDatabase();
-            await db.runAsync('DELETE FROM payments WHERE id = ?', [invoiceId]);
+            await paymentsService.delete(String(invoiceId));
             loadData();
           } catch (error) {
             Alert.alert('Error', 'Failed to delete invoice');

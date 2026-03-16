@@ -27,7 +27,12 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import { CLIENT_STATUSES as CONFIG_CLIENT_STATUSES } from '../src/constants/clientStatuses';
+import { CLIENT_STATUSES as DEFAULT_CLIENT_STATUSES_FALLBACK } from '../src/constants/defaults';
+import * as clientsService from '../src/api/services/clients';
+import * as appOptionsService from '../src/api/services/appOptions';
+import * as paymentsService from '../src/api/services/payments';
+import * as leadsService from '../src/api/services/leads';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, startOfWeek, endOfWeek, addWeeks, differenceInCalendarWeeks, isSameDay, isSameWeek, isSameMonth } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -72,6 +77,16 @@ const CLIENT_STATUSES_DEFAULTS = [
   { label: 'Cancelled', value: 'cancelled', color: '#ef4444' },
 ];
 
+const LEAD_SOURCES_DEFAULTS = [
+  { label: 'Instagram', value: 'instagram', color: '#e1306c' },
+  { label: 'Google', value: 'google', color: '#4285f4' },
+  { label: 'WhatsApp', value: 'whatsapp', color: '#25d366' },
+  { label: 'Referral', value: 'referral', color: '#8b5cf6' },
+  { label: 'Facebook', value: 'facebook', color: '#1877f2' },
+];
+
+const CLIENT_STATUSES = CONFIG_CLIENT_STATUSES ?? DEFAULT_CLIENT_STATUSES_FALLBACK;
+
 // month names used in summary picker
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -115,6 +130,7 @@ export default function Clients() {
   const [leadSources, setLeadSources] = useState<AppOption[]>([]);
   const [availablePackages, setAvailablePackages] = useState<AppOption[]>([]);
   const [clientStatuses, setClientStatuses] = useState<AppOption[]>([]);
+
 
   // UI State
   const [modalVisible, setModalVisible] = useState(false);
@@ -198,48 +214,88 @@ export default function Clients() {
 
   const loadData = useCallback(async () => {
     try {
-      const db = getDatabase();
-      if (!db) {
-        setDbReady(false);
-        return;
-      }
+      console.log('[Clients] Starting data load...');
       setDbReady(true);
       setLoading(true);
 
-      // Seed default statuses if they don't exist
-      const existingStatuses = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'client_status'");
+      console.log('[Clients] Fetching app options...');
+      const options = await appOptionsService.getAll();
+      console.log('[Clients] Got app options:', options.length, 'records');
+
+      const existingStatuses = options.filter((option) => option.type === 'client_status');
       if (existingStatuses.length === 0) {
+        console.log('[Clients] Creating default client statuses...');
         for (const status of CLIENT_STATUSES_DEFAULTS) {
-          await db.runAsync(
-            "INSERT INTO app_options (type, label, value, color) VALUES (?, ?, ?, ?)",
-            ['client_status', status.label, status.value, status.color]
-          );
+          await appOptionsService.create({
+            type: 'client_status',
+            label: status.label,
+            value: status.value,
+            color: status.color,
+          });
         }
+        console.log('[Clients] Default statuses created');
       }
 
-      // Load clients
-      const result = await db.getAllAsync('SELECT * FROM clients ORDER BY id ASC');
-      const allClients = result as Client[];
+      const existingLeadSources = options.filter((option) => option.type === 'lead_source');
+      if (existingLeadSources.length === 0) {
+        console.log('[Clients] Creating default lead sources...');
+        for (const source of LEAD_SOURCES_DEFAULTS) {
+          await appOptionsService.create({
+            type: 'lead_source',
+            label: source.label,
+            value: source.value,
+            color: source.color,
+          });
+        }
+        console.log('[Clients] Default lead sources created');
+      }
+
+      console.log('[Clients] Fetching clients...');
+      const result = await clientsService.getAll();
+      console.log('[Clients] Got clients:', result.length, 'records');
+
+      const allClients = [...result].sort((a: any, b: any) =>
+        String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')),
+      ) as Client[];
       console.log('Loaded clients from database:', allClients.map(c => ({ id: c.id, client_id: c.client_id, next_follow_up: c.next_follow_up })));
       setClients(allClients);
 
-      // Load event types
-      const eventTypesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "event_type" ORDER BY label ASC');
-      setEventTypes(eventTypesResult as AppOption[]);
+      console.log('[Clients] Fetching refreshed options...');
+      const refreshedOptions = await appOptionsService.getAll();
+      console.log('[Clients] Got refreshed options:', refreshedOptions.length, 'records');
 
-      // Load packages
-      const packagesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "package" ORDER BY label ASC');
-      setAvailablePackages(packagesResult as AppOption[]);
+      setEventTypes(
+        refreshedOptions
+          .filter((option) => option.type === 'event_type')
+          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+      );
+      setAvailablePackages(
+        refreshedOptions
+          .filter((option) => option.type === 'package')
+          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+      );
+      const leadSourceOptions = refreshedOptions
+        .filter((option) => option.type === 'lead_source')
+        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[];
 
-      // Load lead sources
-      const leadSourcesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "lead_source" ORDER BY label ASC');
-      setLeadSources(leadSourcesResult as AppOption[]);
+      setLeadSources(
+        leadSourceOptions.length > 0
+          ? leadSourceOptions
+          : LEAD_SOURCES_DEFAULTS.map((source, index) => ({
+              id: -(index + 1),
+              type: 'lead_source',
+              label: source.label,
+              value: source.value,
+              color: source.color,
+            }))
+      );
+      setClientStatuses(
+        refreshedOptions
+          .filter((option) => option.type === 'client_status')
+          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
+      );
 
-      // Load client statuses
-      const clientStatusResult = await db.getAllAsync('SELECT * FROM app_options WHERE type = "client_status" ORDER BY id ASC');
-      setClientStatuses(clientStatusResult as AppOption[]);
-
-      // Calculate Stats
+      console.log('[Clients] Calculating statistics...');
       let todayCount = 0;
       let weekCount = 0;
       let monthCount = 0;
@@ -256,27 +312,15 @@ export default function Clients() {
         }
       });
 
-      setStats({
-        today: todayCount,
-        week: weekCount,
-        month: monthCount
-      });
-
+      setStats({ today: todayCount, week: weekCount, month: monthCount });
+      console.log('[Clients] Data load completed successfully');
     } catch (error) {
-      console.error('Error loading clients:', error);
-      if (error instanceof Error && error.message.includes('initialized')) {
-        setDbReady(false);
-        // Only retry once after a short delay to prevent infinite loops
-        setTimeout(() => {
-          if (!dbReady) {
-            loadData();
-          }
-        }, 500);
-      }
+      console.error('[Clients] Error loading clients:', error);
     } finally {
+      console.log('[Clients] Setting loading to false');
       setLoading(false);
     }
-  }, [dbReady]);
+  }, []);
 
   const onSummaryDatePickerChange = (event: any, date?: Date) => {
     console.log('onSummaryDatePickerChange called', { event, date });
@@ -529,7 +573,6 @@ export default function Clients() {
     }
 
     try {
-      const db = getDatabase();
       const pkgString = formData.selectedPackages.join(', ');
       const totalPrice = parseFloat(formData.total_price) || 0;
       const eventDatesJson = formData.event_dates.length > 0 ? JSON.stringify(formData.event_dates) : null;
@@ -562,16 +605,44 @@ export default function Clients() {
 
       if (editingClientId) {
         console.log('Updating client with ID:', editingClientId);
-        await db.runAsync(
-          'UPDATE clients SET client_id=?, name=?, phone=?, email=?, company_name=?, event_type=?, event_date=?, event_dates=?, date_selection_mode=?, event_location=?, package_name=?, total_price=?, lead_source=?, next_follow_up=?, notes=?, status=? WHERE id=?',
-          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, finalEventDatesJson, formData.dateSelectionMode, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.next_follow_up || null, formData.notes, formData.status, editingClientId]
-        );
+        await clientsService.update(String(editingClientId), {
+          client_id: formData.client_id || null,
+          name: formData.name,
+          phone: formData.phone,
+          email: formData.email,
+          company_name: formData.company_name || null,
+          event_type: formData.event_type,
+          event_date: formData.event_date,
+          event_dates: finalEventDatesJson,
+          date_selection_mode: formData.dateSelectionMode,
+          event_location: formData.event_location,
+          package_name: pkgString,
+          total_price: totalPrice,
+          lead_source: formData.lead_source,
+          next_follow_up: formData.next_follow_up || null,
+          notes: formData.notes,
+          status: formData.status,
+        });
       } else {
         console.log('Inserting new client');
-        await db.runAsync(
-          'INSERT INTO clients (client_id, name, phone, email, company_name, event_type, event_date, event_dates, date_selection_mode, event_location, package_name, total_price, lead_source, next_follow_up, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [formData.client_id || null, formData.name, formData.phone, formData.email, formData.company_name || null, formData.event_type, formData.event_date, finalEventDatesJson, formData.dateSelectionMode, formData.event_location, pkgString, totalPrice, formData.lead_source, formData.next_follow_up || null, formData.notes, formData.status]
-        );
+        await clientsService.create({
+          client_id: formData.client_id || null,
+          name: formData.name,
+          phone: formData.phone,
+          email: formData.email,
+          company_name: formData.company_name || null,
+          event_type: formData.event_type,
+          event_date: formData.event_date,
+          event_dates: finalEventDatesJson,
+          date_selection_mode: formData.dateSelectionMode,
+          event_location: formData.event_location,
+          package_name: pkgString,
+          total_price: totalPrice,
+          lead_source: formData.lead_source,
+          next_follow_up: formData.next_follow_up || null,
+          notes: formData.notes,
+          status: formData.status,
+        });
       }
       
       setModalVisible(false);
@@ -626,8 +697,7 @@ export default function Clients() {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDatabase();
-            await db.runAsync('DELETE FROM clients WHERE id = ?', [id]);
+            await clientsService.delete(String(id));
             await loadData();
           } catch (error) {
             Alert.alert('Error', 'Failed to delete client');
@@ -652,29 +722,21 @@ export default function Clients() {
 
   const handlePayments = async (client: Client) => {
     try {
-      const db = getDatabase();
-      if (!db) return;
-
-      // Check if client has any existing payments
-      const existingPayments: any[] = await db.getAllAsync(
-        'SELECT id FROM payments WHERE client_id = ? ORDER BY id DESC LIMIT 1',
-        [client.id]
-      );
+      const existingPayments: any[] = (await paymentsService.getAll())
+        .filter((payment: any) => String(payment.client_id) === String(client.id))
+        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+        .slice(0, 1);
 
       if (existingPayments.length > 0) {
-        // If payment exists, navigate to edit that payment
         router.push({
           pathname: '/payments',
-          params: {
-            autoEditPaymentId: existingPayments[0].id.toString()
-          }
+          params: { autoEditPaymentId: String(existingPayments[0].id) }
         });
       } else {
-        // If no payment exists, navigate with auto-fill parameters for new payment
         router.push({
           pathname: '/payments',
           params: {
-            autoFillClientId: client.id.toString(),
+            autoFillClientId: String(client.id),
             autoFillClientName: client.name,
             autoFillTotalPrice: client.total_price?.toString() || '0',
             autoFillEventType: client.event_type || ''
@@ -692,46 +754,37 @@ export default function Clients() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Restore', onPress: async () => {
           try {
-            const db = getDatabase();
-            if (!db) return;
+            const existing: any[] = (await leadsService.getAll())
+              .filter((lead: any) => lead.phone === client.phone)
+              .slice(0, 1);
 
-            // attempt to find an existing lead by phone (unique key)
-            const existing: any[] = await db.getAllAsync('SELECT id FROM leads WHERE phone = ? LIMIT 1', [client.phone]);
             if (existing.length > 0) {
               const lid = existing[0].id;
-              await db.runAsync(
-                'UPDATE leads SET name=?, email=?, company_name=?, event_type=?, event_date=?, source=?, stage=?, notes=? WHERE id=?',
-                [
-                  client.name,
-                  client.email || null,
-                  client.company_name || null,
-                  client.event_type || null,
-                  client.event_date || null,
-                  client.lead_source || null,
-                  'new',
-                  client.notes || null,
-                  lid
-                ]
-              );
+              await leadsService.update(String(lid), {
+                name: client.name,
+                email: client.email || null,
+                company_name: client.company_name || null,
+                event_type: client.event_type || null,
+                event_date: client.event_date || null,
+                source: client.lead_source || null,
+                stage: 'new',
+                notes: client.notes || null,
+              });
             } else {
-              await db.runAsync(
-                'INSERT INTO leads (name, phone, email, company_name, event_type, event_date, source, stage, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [
-                  client.name,
-                  client.phone,
-                  client.email || null,
-                  client.company_name || null,
-                  client.event_type || null,
-                  client.event_date || null,
-                  client.lead_source || null,
-                  'new',
-                  client.notes || null
-                ]
-              );
+              await leadsService.create({
+                name: client.name,
+                phone: client.phone,
+                email: client.email || null,
+                company_name: client.company_name || null,
+                event_type: client.event_type || null,
+                event_date: client.event_date || null,
+                source: client.lead_source || null,
+                stage: 'new',
+                notes: client.notes || null,
+              });
             }
-            // delete client record after restoring
-            await db.runAsync('DELETE FROM clients WHERE id = ?', [client.id]);
 
+            await clientsService.delete(String(client.id));
             Alert.alert('Success', 'Client restored to leads');
             await loadData();
           } catch (e) {
@@ -747,11 +800,10 @@ export default function Clients() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Convert', onPress: async () => {
           try {
-            const db = getDatabase();
-            if (!db) return;
-
             // Generate payment_id
-            const lastPayment: any[] = await db.getAllAsync('SELECT payment_id FROM payments ORDER BY id DESC LIMIT 1');
+            const lastPayment: any[] = (await paymentsService.getAll())
+              .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+              .slice(0, 1);
             let paymentNumber = 1;
             if (lastPayment.length > 0 && lastPayment[0].payment_id) {
               const digits = lastPayment[0].payment_id.replace(/\D/g, '');
@@ -760,10 +812,16 @@ export default function Clients() {
             const payment_id = 'P' + paymentNumber.toString().padStart(4, '0');
 
             // Create payment record
-            await db.runAsync(
-              'INSERT INTO payments (payment_id, client_id, total_amount, paid_amount, balance, payment_date, status, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-              [payment_id, client.id, client.total_price || 0, 0, client.total_price || 0, format(new Date(), 'yyyy-MM-dd'), 'pending', 'UPI']
-            );
+            await paymentsService.create({
+              payment_id,
+              client_id: client.id,
+              total_amount: client.total_price || 0,
+              paid_amount: 0,
+              balance: client.total_price || 0,
+              payment_date: format(new Date(), 'yyyy-MM-dd'),
+              status: 'pending',
+              payment_method: 'UPI',
+            });
 
             Alert.alert('Success', `Payment record created: ${payment_id}`);
             await loadData();
@@ -1055,7 +1113,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
     </TouchableOpacity>
   );
 
-  if (!dbReady || (loading && clients.length === 0)) {
+  if (loading && clients.length === 0) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -1562,7 +1620,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 <View style={styles.inputGroup}>
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Status</Text>
                   <View style={styles.statusPicker}>
-                    {CLIENT_STATUSES.filter(s => s.key !== 'all').map((s) => (
+                    {(CLIENT_STATUSES ?? []).filter(s => s.key !== 'all').map((s) => (
                       <TouchableOpacity
                         key={s.key}
                         style={[styles.statusChip, { backgroundColor: formData.status === s.key ? s.color : colors.background, borderColor: s.color }]}
@@ -1598,8 +1656,8 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   <Text style={{ color: colors.primary, fontWeight: '700' }}>{selectedClientForDetail?.client_id}</Text> 
                 </View> 
                 <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}> 
-                  <Ionicons name="close" size={28} color={colors.textSecondary} /> 
-                </TouchableOpacity> 
+                  <Ionicons name="close" size={28} color={colors.textSecondary} />
+                </TouchableOpacity>
               </View> 
               <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}> 
                 <DetailRow label="Name" value={selectedClientForDetail?.name} icon="person-outline" /> 

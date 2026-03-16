@@ -12,13 +12,25 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
-import { getDatabase } from '../src/database/db';
+import * as appOptionsService from '../src/api/services/appOptions';
 
 interface AppOption {
   id: number;
   label: string;
   type: string;
 }
+
+const LOCAL_FALLBACK_OPTIONS: Record<string, string[]> = {
+  lead_source: ['Instagram', 'Google', 'WhatsApp', 'Referral', 'Facebook'],
+  lead_stage: ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Won', 'Lost'],
+  event_type: ['Wedding', 'Engagement', 'Birthday', 'Corporate'],
+  package: ['Basic', 'Standard', 'Premium'],
+  client_status: ['Booked', 'Scheduled', 'Delivered', 'Cancelled'],
+  payment_method: ['UPI', 'Cash', 'Card', 'Bank Transfer'],
+  expense_status: ['Paid', 'Pending', 'Scheduled'],
+  linked_shoot_event: ['None'],
+  location_type: ['Indoor', 'Outdoor', 'Studio'],
+};
 
   const customizationSections = [
   {
@@ -66,15 +78,26 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
   const [editingOption, setEditingOption] = useState<AppOption | null>(null);
   const [newOptionLabel, setNewOptionLabel] = useState('');
 
+  const fallbackForType = useCallback((): AppOption[] => {
+    return (LOCAL_FALLBACK_OPTIONS[type] ?? []).map((item, index) => ({
+      id: -(index + 1),
+      label: item,
+      type,
+    }));
+  }, [type]);
+
   const loadOptions = useCallback(async () => {
     try {
-      const db = getDatabase();
-      const result = await db.getAllAsync('SELECT * FROM app_options WHERE type = ? ORDER BY label ASC', [type]);
-      setOptions(result as AppOption[]);
+      const result = await appOptionsService.getAll();
+      const filtered = result
+        .filter((option) => option.type === type)
+        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? '')));
+      setOptions(filtered.length > 0 ? (filtered as AppOption[]) : fallbackForType());
     } catch (error) {
       console.error(`Error loading options for type ${type}:`, error);
+      setOptions(fallbackForType());
     }
-  }, [type]);
+  }, [type, fallbackForType]);
 
   useEffect(() => {
     loadOptions();
@@ -86,12 +109,31 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
       return;
     }
     try {
-      const db = getDatabase();
+      let saved: any = null;
       if (editingOption) {
-        await db.runAsync('UPDATE app_options SET label = ? WHERE id = ?', [newOptionLabel, editingOption.id]);
+        saved = await appOptionsService.update(String(editingOption.id), { label: newOptionLabel });
       } else {
-        await db.runAsync('INSERT INTO app_options (type, label) VALUES (?, ?)', [type, newOptionLabel]);
+        saved = await appOptionsService.create({ type, label: newOptionLabel });
       }
+
+      if (!saved) {
+        // Keep customization usable even when remote schema/options table is unavailable.
+        const optimistic: AppOption = {
+          id: Date.now(),
+          label: newOptionLabel,
+          type,
+        };
+        setOptions(prev => {
+          const next = [...prev.filter(o => o.label.toLowerCase() !== newOptionLabel.toLowerCase()), optimistic];
+          return next.sort((a, b) => a.label.localeCompare(b.label));
+        });
+        Alert.alert('Saved locally', 'Could not persist to database, but the option is available for this session.');
+        setModalVisible(false);
+        setEditingOption(null);
+        setNewOptionLabel('');
+        return;
+      }
+
       setModalVisible(false);
       setEditingOption(null);
       setNewOptionLabel('');
@@ -110,8 +152,7 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
         style: 'destructive',
         onPress: async () => {
           try {
-            const db = getDatabase();
-            await db.runAsync('DELETE FROM app_options WHERE id = ?', [id]);
+            await appOptionsService.delete(String(id));
             loadOptions();
           } catch (error) {
             console.error('Error deleting option:', error);
