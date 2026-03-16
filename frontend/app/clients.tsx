@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 
 // return number of calendar weeks covering the given month/year (4-6).
 const getWeeksInMonthCount = (month: number, year: number) => {
@@ -15,6 +15,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Pressable,
   Modal,
   TextInput,
   Alert,
@@ -101,7 +102,21 @@ export default function Clients() {
   const { colors } = useThemeStore();
   const router = useRouter();
   const params = useLocalSearchParams();
-  const autoEditClientId = params?.autoEditClientId ? parseInt(params.autoEditClientId as string) : null;
+  const param = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+  const autoEditClientId = param(params?.autoEditClientId) ? parseInt(String(param(params?.autoEditClientId))) : null;
+  const fromLead = String(param(params?.fromLead) ?? '') === '1';
+  const sourceLeadId = param(params?.sourceLeadId) ? String(param(params?.sourceLeadId)) : null;
+  const leadName = String(param(params?.leadName) ?? '');
+  const leadPhone = String(param(params?.leadPhone) ?? '');
+  const leadEmail = String(param(params?.leadEmail) ?? '');
+  const leadCompanyName = String(param(params?.leadCompanyName) ?? '');
+  const leadEventType = String(param(params?.leadEventType) ?? '');
+  const leadEventDate = String(param(params?.leadEventDate) ?? '');
+  const leadEventLocation = String(param(params?.leadEventLocation) ?? '');
+  const leadPackageName = String(param(params?.leadPackageName) ?? '');
+  const leadTotalPrice = String(param(params?.leadTotalPrice) ?? '');
+  const leadSource = String(param(params?.leadSource) ?? '');
+  const leadNotes = String(param(params?.leadNotes) ?? '');
 
   // Data State
   const [clients, setClients] = useState<Client[]>([]);
@@ -141,9 +156,14 @@ export default function Clients() {
   const [isEventTypePickerVisible, setIsEventTypePickerVisible] = useState(false);
   const [isPackagePickerVisible, setIsPackagePickerVisible] = useState(false);
   const [isSourcePickerVisible, setIsSourcePickerVisible] = useState(false);
+  const [addCategoryModalVisible, setAddCategoryModalVisible] = useState(false);
+  const [addCategoryType, setAddCategoryType] = useState<'event_type' | 'package' | 'lead_source' | null>(null);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
   const [showEventDatePicker, setShowEventDatePicker] = useState(false);
   const [showFollowUpDatePicker, setShowFollowUpDatePicker] = useState(false);
   const [editingClientId, setEditingClientId] = useState<number | null>(null);
+  const [conversionLeadId, setConversionLeadId] = useState<string | null>(null);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
   const [selectedClientForDetail, setSelectedClientForDetail] = useState<Client | null>(null);
   const [dropdownVisible, setDropdownVisible] = useState(false);
@@ -183,6 +203,96 @@ export default function Clients() {
     notes: '',
     status: 'booked'
   });
+
+  // Prevent auto-prefill effect from running multiple times per navigation.
+  const leadPrefillAppliedRef = useRef(false);
+
+  const ADD_CATEGORY_ID = -999999;
+
+  const withAddCategoryOption = useCallback((items: AppOption[]) => {
+    return [
+      ...items,
+      { id: ADD_CATEGORY_ID, type: '__add__', label: '+ Add Category', value: '__add__', color: colors.primary } as AppOption,
+    ];
+  }, [colors.primary]);
+
+  const refreshDropdownOptions = useCallback(async () => {
+    const refreshedOptions = await appOptionsService.getAll();
+
+    setEventTypes(
+      refreshedOptions
+        .filter((option) => option.type === 'event_type')
+        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+    );
+
+    setAvailablePackages(
+      refreshedOptions
+        .filter((option) => option.type === 'package')
+        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+    );
+
+    const leadSourceOptions = refreshedOptions
+      .filter((option) => option.type === 'lead_source')
+      .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[];
+
+    setLeadSources(
+      leadSourceOptions.length > 0
+        ? leadSourceOptions
+        : LEAD_SOURCES_DEFAULTS.map((source, index) => ({
+            id: -(index + 1),
+            type: 'lead_source',
+            label: source.label,
+            value: source.value,
+            color: source.color,
+          }))
+    );
+  }, []);
+
+  const openAddCategoryModal = (type: 'event_type' | 'package' | 'lead_source') => {
+    setAddCategoryType(type);
+    setNewCategoryName('');
+    setAddCategoryModalVisible(true);
+  };
+
+  const handleAddCategory = async () => {
+    if (!addCategoryType) return;
+    const label = newCategoryName.trim();
+    if (!label) {
+      Alert.alert('Validation Error', 'Category name is required.');
+      return;
+    }
+
+    try {
+      setAddingCategory(true);
+      const createdOrExisting = await appOptionsService.createIfNotExists(addCategoryType, label);
+      await refreshDropdownOptions();
+
+      if (createdOrExisting) {
+        if (addCategoryType === 'event_type') {
+          setFormData(prev => ({ ...prev, event_type: String(createdOrExisting.label ?? label) }));
+          setIsEventTypePickerVisible(false);
+        } else if (addCategoryType === 'package') {
+          setFormData(prev => {
+            const val = String(createdOrExisting.label ?? label);
+            return prev.selectedPackages.includes(val)
+              ? prev
+              : { ...prev, selectedPackages: [...prev.selectedPackages, val] };
+          });
+          setIsPackagePickerVisible(false);
+        } else if (addCategoryType === 'lead_source') {
+          setFormData(prev => ({ ...prev, lead_source: String(createdOrExisting.label ?? label) }));
+          setIsSourcePickerVisible(false);
+        }
+      }
+
+      setAddCategoryModalVisible(false);
+    } catch (error) {
+      console.error('Error adding category:', error);
+      Alert.alert('Error', 'Failed to add category.');
+    } finally {
+      setAddingCategory(false);
+    }
+  };
 
   // auto-generate next client_id based on existing clients
   // new format: C followed by four digits (e.g. C0001)
@@ -357,6 +467,52 @@ export default function Clients() {
       }
     }
   }, [autoEditClientId, clients]);
+
+  // Auto-open client form with lead data when coming from Leads convert action.
+  useEffect(() => {
+    if (!fromLead || leadPrefillAppliedRef.current) return;
+
+    leadPrefillAppliedRef.current = true;
+    setConversionLeadId(sourceLeadId);
+    setEditingClientId(null);
+
+    setFormData({
+      client_id: getNextClientId(),
+      name: leadName,
+      phone: leadPhone,
+      email: leadEmail,
+      company_name: leadCompanyName,
+      event_type: leadEventType,
+      event_date: leadEventDate || format(new Date(), 'yyyy-MM-dd'),
+      event_end_date: leadEventDate || format(new Date(), 'yyyy-MM-dd'),
+      event_dates: [],
+      dateSelectionMode: 'range',
+      event_location: leadEventLocation,
+      selectedPackages: leadPackageName ? leadPackageName.split(', ') : [],
+      total_price: leadTotalPrice,
+      lead_source: leadSource,
+      next_follow_up: '',
+      notes: leadNotes,
+      status: 'booked',
+    });
+
+    setModalVisible(true);
+  }, [
+    fromLead,
+    sourceLeadId,
+    leadName,
+    leadPhone,
+    leadEmail,
+    leadCompanyName,
+    leadEventType,
+    leadEventDate,
+    leadEventLocation,
+    leadPackageName,
+    leadTotalPrice,
+    leadSource,
+    leadNotes,
+    getNextClientId,
+  ]);
 
   // Close modal and clear autoEditClientId after successful save
   useEffect(() => {
@@ -644,11 +800,28 @@ export default function Clients() {
           status: formData.status,
         });
       }
-      
+
+      // If this save came from lead conversion flow, mark lead as converted.
+      if (conversionLeadId) {
+        try {
+          await leadsService.update(String(conversionLeadId), {
+            stage: 'won',
+            status: 'converted',
+          });
+        } catch (leadUpdateError) {
+          console.error('Failed to mark lead as converted:', leadUpdateError);
+        }
+      }
+
       setModalVisible(false);
       resetForm();
       await loadData();
-      Alert.alert('Success', `Client ${editingClientId ? 'updated' : 'added'} successfully`);
+      Alert.alert('Success', `Client ${(editingClientId || conversionLeadId) ? 'updated' : 'added'} successfully`);
+
+      // Required behavior: after updating an existing client, return to clients list page.
+      if (editingClientId) {
+        router.replace('/clients');
+      }
     } catch (error) {
       console.error('Error saving client:', error);
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -722,6 +895,7 @@ export default function Clients() {
 
   const handlePayments = async (client: Client) => {
     try {
+      const openPaymentFormAt = String(Date.now());
       const existingPayments: any[] = (await paymentsService.getAll())
         .filter((payment: any) => String(payment.client_id) === String(client.id))
         .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
@@ -730,7 +904,11 @@ export default function Clients() {
       if (existingPayments.length > 0) {
         router.push({
           pathname: '/payments',
-          params: { autoEditPaymentId: String(existingPayments[0].id) }
+          params: {
+            autoEditPaymentId: String(existingPayments[0].id),
+            autoFillEventType: client.event_type || '',
+            openPaymentFormAt,
+          }
         });
       } else {
         router.push({
@@ -739,7 +917,8 @@ export default function Clients() {
             autoFillClientId: String(client.id),
             autoFillClientName: client.name,
             autoFillTotalPrice: client.total_price?.toString() || '0',
-            autoFillEventType: client.event_type || ''
+            autoFillEventType: client.event_type || '',
+            openPaymentFormAt,
           }
         });
       }
@@ -853,6 +1032,7 @@ export default function Clients() {
       status: 'booked'
     });
     setEditingClientId(null);
+    setConversionLeadId(null);
   };
 
   const resetSummarySelection = () => {
@@ -1348,7 +1528,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
             <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
               <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: colors.text }]}>{editingClientId ? 'Edit Client' : 'Add New Client'}</Text>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>{(editingClientId || conversionLeadId) ? 'Edit Client' : 'Add New Client'}</Text>
                 <TouchableOpacity onPress={() => setModalVisible(false)}>
                   <Ionicons name="close" size={28} color={colors.textSecondary} />
                 </TouchableOpacity>
@@ -1636,7 +1816,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                   style={[styles.submitButton, { backgroundColor: colors.primary }]}
                   onPress={handleSaveClient}
                 >
-                  <Text style={styles.submitButtonText}>{editingClientId ? 'Update Client' : 'Add Client'}</Text>
+                  <Text style={styles.submitButtonText}>{(editingClientId || conversionLeadId) ? 'Update Client' : 'Add Client'}</Text>
                 </TouchableOpacity>
                 <View style={{ height: 40 }} />
               </ScrollView>
@@ -1647,8 +1827,9 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
 
       {/* Client Detail Modal */}
       <Modal visible={isDetailModalVisible} animationType="fade" transparent={true} onRequestClose={() => setIsDetailModalVisible(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setIsDetailModalVisible(false)}>
-          <View style={[styles.modalContainer, { width: '90%' }]}> 
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsDetailModalVisible(false)} />
+          <View style={[styles.modalContainer, { width: '90%' }]}>
             <View style={[styles.modalContent, { backgroundColor: colors.surface }]}> 
               <View style={styles.modalHeader}> 
                 <View> 
@@ -1687,7 +1868,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
               </ScrollView> 
             </View> 
           </View> 
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       {/* Sort Modal */}
@@ -1860,10 +2041,20 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
         <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsEventTypePickerVisible(false)}>
           <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
             <View style={styles.pickerHeader}><Text style={[styles.pickerTitle, { color: colors.text }]}>Select Event Type</Text></View>
-            <FlatList data={eventTypes} keyExtractor={(item) => item.id.toString()} renderItem={({ item }) => (
-              <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => { setFormData({ ...formData, event_type: item.label }); setIsEventTypePickerVisible(false); }}>
-                <Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>
-                {formData.event_type === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}
+            <FlatList data={withAddCategoryOption(eventTypes)} keyExtractor={(item, index) => `${item.id}-${index}`} renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (item.id === ADD_CATEGORY_ID) {
+                    openAddCategoryModal('event_type');
+                    return;
+                  }
+                  setFormData({ ...formData, event_type: item.label });
+                  setIsEventTypePickerVisible(false);
+                }}
+              >
+                <Text style={[styles.pickerItemText, { color: item.id === ADD_CATEGORY_ID ? colors.primary : colors.text }]}>{item.label}</Text>
+                {item.id !== ADD_CATEGORY_ID && formData.event_type === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}
               </TouchableOpacity>
             )} />
           </View>
@@ -1880,10 +2071,21 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 <Text style={{ color: colors.primary, fontWeight: '700' }}>DONE</Text>
               </TouchableOpacity>
             </View>
-            <FlatList data={availablePackages} keyExtractor={(item) => item.id.toString()} renderItem={({ item }) => (
-              <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => togglePackage(item.label)}>
-                <Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>
-                <Ionicons name={formData.selectedPackages.includes(item.label) ? "checkbox" : "square-outline"} size={22} color={colors.primary} />
+            <FlatList data={withAddCategoryOption(availablePackages)} keyExtractor={(item, index) => `${item.id}-${index}`} renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (item.id === ADD_CATEGORY_ID) {
+                    openAddCategoryModal('package');
+                    return;
+                  }
+                  togglePackage(item.label);
+                }}
+              >
+                <Text style={[styles.pickerItemText, { color: item.id === ADD_CATEGORY_ID ? colors.primary : colors.text }]}>{item.label}</Text>
+                {item.id !== ADD_CATEGORY_ID && (
+                  <Ionicons name={formData.selectedPackages.includes(item.label) ? "checkbox" : "square-outline"} size={22} color={colors.primary} />
+                )}
               </TouchableOpacity>
             )} />
           </View>
@@ -1895,14 +2097,59 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
         <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setIsSourcePickerVisible(false)}>
           <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
             <View style={styles.pickerHeader}><Text style={[styles.pickerTitle, { color: colors.text }]}>Select Lead Source</Text></View>
-            <FlatList data={leadSources} keyExtractor={(item) => item.id.toString()} renderItem={({ item }) => (
-              <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => { setFormData({ ...formData, lead_source: item.label }); setIsSourcePickerVisible(false); }}>
-                <Text style={[styles.pickerItemText, { color: colors.text }]}>{item.label}</Text>
-                {formData.lead_source === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}
+            <FlatList data={withAddCategoryOption(leadSources)} keyExtractor={(item, index) => `${item.id}-${index}`} renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                onPress={() => {
+                  if (item.id === ADD_CATEGORY_ID) {
+                    openAddCategoryModal('lead_source');
+                    return;
+                  }
+                  setFormData({ ...formData, lead_source: item.label });
+                  setIsSourcePickerVisible(false);
+                }}
+              >
+                <Text style={[styles.pickerItemText, { color: item.id === ADD_CATEGORY_ID ? colors.primary : colors.text }]}>{item.label}</Text>
+                {item.id !== ADD_CATEGORY_ID && formData.lead_source === item.label && <Ionicons name="checkmark" size={20} color={colors.primary} />}
               </TouchableOpacity>
             )} />
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={addCategoryModalVisible} transparent animationType="fade" onRequestClose={() => setAddCategoryModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
+            <View style={styles.pickerHeader}>
+              <Text style={[styles.pickerTitle, { color: colors.text }]}>Add Category</Text>
+            </View>
+            <View style={{ padding: 16 }}>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                placeholder="Category Name"
+                placeholderTextColor={colors.textTertiary}
+                value={newCategoryName}
+                onChangeText={setNewCategoryName}
+              />
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+                <TouchableOpacity
+                  style={[styles.resetButton, { borderColor: colors.border, flex: 1 }]}
+                  onPress={() => setAddCategoryModalVisible(false)}
+                  disabled={addingCategory}
+                >
+                  <Text style={[styles.resetButtonText, { color: colors.textSecondary }]}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitButton, { backgroundColor: colors.primary, flex: 1 }]}
+                  onPress={handleAddCategory}
+                  disabled={addingCategory}
+                >
+                  {addingCategory ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitButtonText}>Add</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* Actions Dropdown Modal */}

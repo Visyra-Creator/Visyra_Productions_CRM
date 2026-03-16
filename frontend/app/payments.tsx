@@ -105,7 +105,18 @@ export default function Payments() {
   }
   // ──────────────────────────────────────────────────────────────────────────
   const params = useLocalSearchParams();
-  const navigationParamsProcessed = useRef(false);
+  const lastProcessedNavigationToken = useRef<string | null>(null);
+  const getParam = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
+  const autoEditPaymentId = getParam(params?.autoEditPaymentId);
+  const autoFillClientId = getParam(params?.autoFillClientId);
+  const autoFillClientName = getParam(params?.autoFillClientName) ?? '';
+  const autoFillTotalPrice = getParam(params?.autoFillTotalPrice) ?? '0';
+  const autoFillEventType = getParam(params?.autoFillEventType) ?? '';
+  const hasAutoOpenParams = Boolean(autoEditPaymentId || autoFillClientId || getParam(params?.openPaymentFormAt));
+  const openPaymentFormAt = hasAutoOpenParams
+    ? (getParam(params?.openPaymentFormAt)
+      ?? [autoEditPaymentId ?? '', autoFillClientId ?? '', autoFillClientName, autoFillTotalPrice, autoFillEventType].join(':'))
+    : undefined;
 
   // Data State
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -131,7 +142,8 @@ export default function Payments() {
   const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<Invoice | null>(null);
   const [showClientPaymentsDropdown, setShowClientPaymentsDropdown] = useState(false);
   const [editingPaymentRecord, setEditingPaymentRecord] = useState<PaymentRecord | null>(null);
-  
+  const [prefilledShootEventLabel, setPrefilledShootEventLabel] = useState('');
+
   // Filter and Sort State
   const [sortBy, setSortBy] = useState<'id_asc' | 'id_desc' | 'date_desc' | 'date_asc' | 'client_asc'>('id_asc');
   const [isSortModalVisible, setIsSortModalVisible] = useState(false);
@@ -167,6 +179,38 @@ export default function Payments() {
     payment_method: 'UPI',
     notes: ''
   });
+
+  const resetInvoiceForm = useCallback(() => {
+    setFormData({
+      client_id: '',
+      client_name: '',
+      shoot_id: null,
+      total_amount: '',
+      due_date: new Date(),
+      payment_method: 'UPI',
+      payment_title: '',
+      present_date: new Date(),
+      first_paid_amount: ''
+    });
+    setPrefilledShootEventLabel('');
+    setEditingInvoice(null);
+    setClientPickerVisible(false);
+    setShootPickerVisible(false);
+    setMethodPickerVisible(false);
+    setShowDueDatePicker(false);
+    setShowPaymentDatePicker(false);
+    setShowClientPaymentsDropdown(false);
+    setClientSearch('');
+  }, []);
+
+  const closeInvoiceModal = useCallback(() => {
+    if (openPaymentFormAt) {
+      lastProcessedNavigationToken.current = openPaymentFormAt;
+    }
+
+    setModalVisible(false);
+    resetInvoiceForm();
+  }, [openPaymentFormAt, resetInvoiceForm]);
 
   const loadData = useCallback(async () => {
     try {
@@ -225,15 +269,52 @@ export default function Payments() {
 
   // Handle auto-fill form from navigation params
   useEffect(() => {
-    if (navigationParamsProcessed.current) {
+    if (!openPaymentFormAt || lastProcessedNavigationToken.current === openPaymentFormAt) {
       return;
     }
 
-    if (params?.autoFillClientId && clients.length > 0) {
-      const clientId = params.autoFillClientId as string;
-      const clientName = params.autoFillClientName as string || '';
-      const totalPrice = params.autoFillTotalPrice as string || '0';
-      const eventType = params.autoFillEventType as string || '';
+    if (autoEditPaymentId && invoices.length > 0) {
+      const invoiceId = parseInt(autoEditPaymentId);
+      const invoiceToEdit = invoices.find(inv => inv.id === invoiceId);
+
+      if (invoiceToEdit && !modalVisible) {
+        const firstPayment = paymentRecords.find(p => p.invoice_id === invoiceToEdit.id);
+        const eventTypeParam = autoFillEventType || '';
+
+        let selectedShootId = invoiceToEdit.shoot_id;
+        if (eventTypeParam && shoots.length > 0) {
+          const matchingShoot = shoots.find(
+            s => s.client_id === Number(invoiceToEdit.client_id) && s.event_type === eventTypeParam
+          );
+          if (matchingShoot) {
+            selectedShootId = matchingShoot.id;
+          }
+        }
+
+        setEditingInvoice(invoiceToEdit);
+        setFormData({
+          client_id: String(invoiceToEdit.client_id),
+          client_name: invoiceToEdit.client_name || '',
+          shoot_id: selectedShootId,
+          total_amount: String(invoiceToEdit.total_amount),
+          due_date: invoiceToEdit.due_date ? parseISO(invoiceToEdit.due_date) : new Date(),
+          payment_method: firstPayment?.payment_method || 'UPI',
+          payment_title: firstPayment?.notes || '',
+          present_date: firstPayment?.payment_date ? parseISO(firstPayment.payment_date) : new Date(),
+          first_paid_amount: firstPayment ? String(firstPayment.amount) : ''
+        });
+        setPrefilledShootEventLabel(eventTypeParam || invoiceToEdit.event_type || '');
+        setModalVisible(true);
+        lastProcessedNavigationToken.current = openPaymentFormAt;
+      }
+      return;
+    }
+
+    if (autoFillClientId && clients.length > 0) {
+      const clientId = autoFillClientId;
+      const clientName = autoFillClientName;
+      const totalPrice = autoFillTotalPrice;
+      const eventType = autoFillEventType;
 
       if (!modalVisible) {
         let selectedShootId: number | null = null;
@@ -252,11 +333,24 @@ export default function Payments() {
           shoot_id: selectedShootId,
           due_date: new Date()
         }));
+        setPrefilledShootEventLabel(eventType);
         setModalVisible(true);
-        navigationParamsProcessed.current = true;
+        lastProcessedNavigationToken.current = openPaymentFormAt;
       }
     }
-  }, [params?.autoFillClientId, params?.autoFillClientName, params?.autoFillTotalPrice, params?.autoFillEventType, clients.length, shoots.length, modalVisible]);
+  }, [
+    autoEditPaymentId,
+    autoFillClientId,
+    autoFillClientName,
+    autoFillTotalPrice,
+    autoFillEventType,
+    openPaymentFormAt,
+    clients.length,
+    invoices.length,
+    paymentRecords.length,
+    shoots.length,
+    modalVisible
+  ]);
 
   const getInvoiceBalance = (invoiceId: number): number => {
     const invoice = invoices.find(inv => inv.id === invoiceId);
@@ -409,24 +503,59 @@ export default function Payments() {
     return result;
   }, [invoices, searchQuery, filters, sortBy, paymentRecords]);
 
+  const getDisplayPaymentId = useCallback((invoice: Invoice) => {
+    const rawPaymentId = String(invoice.payment_id ?? '').trim();
+    const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawPaymentId);
+
+    if (rawPaymentId && !looksLikeUuid) {
+      return rawPaymentId;
+    }
+
+    const index = invoices.findIndex((inv) => String(inv.id) === String(invoice.id));
+    const serial = index >= 0 ? index + 1 : 0;
+    return `P${String(serial).padStart(4, '0')}`;
+  }, [invoices]);
+
   const handleSaveInvoice = async () => {
-    if (!formData.client_id) { Alert.alert('Error', 'Please select a client'); return; }
-    if (!formData.shoot_id) { Alert.alert('Error', 'Please select a shoot/event'); return; }
-    if (!formData.total_amount || isNaN(parseFloat(formData.total_amount))) { Alert.alert('Error', 'Please enter a valid amount'); return; }
+    console.log('[Payments] Create Invoice handler triggered');
+    if (!formData.client_id) {
+      console.log('[Payments] Create Invoice blocked: missing client');
+      Alert.alert('Error', 'Please select a client');
+      return;
+    }
+    if (!formData.shoot_id) {
+      console.log('[Payments] Create Invoice blocked: missing shoot/event');
+      Alert.alert('Error', 'Please select a shoot/event');
+      return;
+    }
+    if (!formData.total_amount || isNaN(parseFloat(formData.total_amount))) {
+      console.log('[Payments] Create Invoice blocked: invalid total amount', formData.total_amount);
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
 
     try {
       const { client_id, shoot_id, total_amount, due_date, present_date, first_paid_amount, payment_method, payment_title } = formData;
       const total = parseFloat(total_amount);
       const paidAmount = first_paid_amount ? parseFloat(first_paid_amount) : 0;
+      console.log('[Payments] Saving invoice...', { editingInvoiceId: editingInvoice?.id ?? null, client_id, shoot_id, total, paidAmount });
+
+      let invoiceId: number | null = null;
 
       if (editingInvoice) {
         // Only update invoice details, don't touch payment records
-        await paymentsService.update(String(editingInvoice.id), {
+        const updatedInvoice: any = await paymentsService.update(String(editingInvoice.id), {
           client_id,
           shoot_id,
           total_amount: total,
           due_date: format(due_date, 'yyyy-MM-dd'),
         });
+
+        if (!updatedInvoice) {
+          throw new Error('Invoice update failed');
+        }
+
+        invoiceId = editingInvoice.id;
       } else {
         // Create new invoice
         const result: any = await paymentsService.create({
@@ -436,34 +565,30 @@ export default function Payments() {
           due_date: format(due_date, 'yyyy-MM-dd'),
           payment_date: format(new Date(), 'yyyy-MM-dd'),
         });
+        console.log('[Payments] Invoice create result:', result);
 
-        // Create first payment record if amount is provided
-        if (paidAmount > 0 && result?.id) {
-          await paymentRecordsService.create({
-            invoice_id: result.id,
-            amount: paidAmount,
-            payment_date: format(present_date, 'yyyy-MM-dd'),
-            payment_method,
-            notes: payment_title,
-          });
-        }
+        invoiceId = result?.id ?? null;
       }
 
-      setFormData({
-        client_id: '',
-        client_name: '',
-        shoot_id: null,
-        total_amount: '',
-        due_date: new Date(),
-        payment_method: 'UPI',
-        payment_title: '',
-        present_date: new Date(),
-        first_paid_amount: ''
-      });
+      if (!invoiceId) {
+        throw new Error('Invoice ID missing');
+      }
 
+      // Create first payment record if amount is provided
+      if (paidAmount > 0) {
+        await paymentRecordsService.create({
+          invoice_id: invoiceId,
+          amount: paidAmount,
+          payment_date: format(present_date, 'yyyy-MM-dd'),
+          payment_method,
+          notes: payment_title,
+        });
+      }
+
+      closeInvoiceModal();
+      await loadData();
       setModalVisible(false);
-      setEditingInvoice(null);
-      loadData();
+      console.log('[Payments] Invoice saved successfully, modal closed, list refreshed');
       Alert.alert('Success', `Invoice ${editingInvoice ? 'updated' : 'created'} successfully`);
     } catch (error) {
       console.error('Error saving invoice:', error);
@@ -554,6 +679,7 @@ export default function Payments() {
       present_date: firstPayment?.payment_date ? parseISO(firstPayment.payment_date) : new Date(),
       first_paid_amount: firstPayment ? String(firstPayment.amount) : ''
     });
+    setPrefilledShootEventLabel(invoice.event_type || '');
     setModalVisible(true);
   };
 
@@ -575,17 +701,45 @@ export default function Payments() {
     ]);
   };
 
-  const SummaryCard = ({ title, count, icon, color }: any) => (
-    <View style={[styles.summaryCard, { backgroundColor: colors.surface }]}>
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.summaryCount, { color: colors.text }]}>{count}</Text>
-        <Text style={[styles.summaryTitle, { color: colors.textSecondary }]}>{title}</Text>
+  const SummaryCard = ({ title, count, icon, gradient, color }: any) => {
+    const useGradient = Array.isArray(gradient) && gradient.length > 1;
+    const content = (
+      <View style={styles.summaryContent}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }, useGradient ? styles.summaryCountLight : { color: colors.text }]}>{count}</Text>
+          <Text
+            style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }, useGradient ? styles.summaryTitleLight : { color: colors.textSecondary }]}
+            numberOfLines={1}
+          >
+            {title}
+          </Text>
+        </View>
+        <View
+          style={[
+            styles.summaryIconContainer,
+            { width: isTablet ? 44 : 36, height: isTablet ? 44 : 36 },
+            useGradient ? styles.summaryIconContainerLight : { backgroundColor: (color || colors.primary) + '15' },
+          ]}
+        >
+          <Ionicons name={icon} size={isTablet ? 28 : 24} color={useGradient ? '#fff' : (color || colors.primary)} />
+        </View>
       </View>
-      <View style={[styles.summaryIconContainer, { backgroundColor: (color || colors.primary) + '15' }]}>
-        <Ionicons name={icon} size={24} color={color || colors.primary} />
+    );
+
+    if (useGradient) {
+      return (
+        <LinearGradient colors={gradient} style={[styles.summaryCard, { height: isTablet ? 100 : 80 }]}>
+          {content}
+        </LinearGradient>
+      );
+    }
+
+    return (
+      <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border, height: isTablet ? 100 : 80 }]}>
+        {content}
       </View>
-    </View>
-  );
+    );
+  };
 
   const renderInvoiceRow = ({ item: invoice }: { item: Invoice }) => {
     const balance = getInvoiceBalance(invoice.id);
@@ -595,38 +749,34 @@ export default function Payments() {
 
     return (
       <View style={{ marginBottom: 16 }}>
-        <View style={[styles.invoiceCard, { backgroundColor: colors.surface }]}>
+        <View style={[styles.invoiceCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           {/* Top Section with Info and Actions */}
           <View style={[styles.invoiceCardTop, { borderBottomColor: colors.border }]}>
             <TouchableOpacity
-              style={{ flex: 1 }}
+              style={{ flex: 1, marginRight: 12 }}
               onPress={() => setShowPaymentHistoryId(showPaymentHistoryId === invoice.id ? null : invoice.id)}
               activeOpacity={0.7}
             >
               <View>
-                <View style={{ flexDirection: 'row', gap: 12, marginBottom: 8, alignItems: 'center' }}>
-                  <View style={{ flex: 0.8 }}>
-                    <Text style={[styles.invoiceId, { color: colors.primary }]}>{invoice.payment_id || `P${invoice.id}`}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.invoiceClient, { color: colors.text }]}>{invoice.client_name || '-'}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.invoiceDue, { color: colors.textSecondary }]}>
-                      {invoice.event_type || '-'}
+                <Text style={[styles.invoiceClient, { color: colors.text }]}>{invoice.client_name || '-'}</Text>
+                <View style={styles.invoiceMetaRow}>
+                  <Text style={[styles.invoiceId, { color: colors.primary }]}>{getDisplayPaymentId(invoice)}</Text>
+                  <Text style={[styles.invoiceMetaDot, { color: colors.textTertiary }]}>•</Text>
+                  <Text style={[styles.invoiceMetaText, { color: colors.textSecondary }]}>{invoice.event_type || 'No event type'}</Text>
+                </View>
+                <View style={styles.invoiceMetaRow}>
+                  {invoicePayments.length > 0 && invoicePayments[0].payment_date ? (
+                    <Text style={[styles.invoiceMetaText, { color: colors.textSecondary }]}>
+                      Last payment: {format(parseISO(invoicePayments[0].payment_date), 'dd-MMM-yy')}
                     </Text>
-                  </View>
-                  {invoicePayments.length > 0 && invoicePayments[0].payment_date && (
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.invoiceDue, { color: colors.textSecondary }]}>
-                        {format(parseISO(invoicePayments[0].payment_date), 'dd-MMM-yy')}
-                      </Text>
-                    </View>
+                  ) : (
+                    <Text style={[styles.invoiceMetaText, { color: colors.textTertiary }]}>No payments recorded yet</Text>
                   )}
                   {invoice.due_date && (
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.invoiceDue, { color: colors.textSecondary }]}>Due: {format(parseISO(invoice.due_date), 'dd-MMM-yy')}</Text>
-                    </View>
+                    <>
+                      <Text style={[styles.invoiceMetaDot, { color: colors.textTertiary }]}>•</Text>
+                      <Text style={[styles.invoiceMetaText, { color: colors.textSecondary }]}>Due {format(parseISO(invoice.due_date), 'dd-MMM-yy')}</Text>
+                    </>
                   )}
                 </View>
               </View>
@@ -737,13 +887,13 @@ export default function Payments() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.summaryContainer}>
-        <SummaryCard title="Total Income" count={`₹${stats.totalRevenue.toLocaleString()}`} icon="cash-outline" color={colors.primary} />
-        <SummaryCard title="This Month" count={`₹${stats.thisMonth.toLocaleString()}`} icon="calendar-outline" color={colors.info} />
-        <SummaryCard title="Collected" count={`₹${stats.totalCollected.toLocaleString()}`} icon="checkmark-done-outline" color={colors.success} />
+        <SummaryCard title="Total Income" count={`₹${stats.totalRevenue.toLocaleString()}`} icon="cash-outline" gradient={['#10b981', '#059669']} />
+        <SummaryCard title="This Month" count={`₹${stats.thisMonth.toLocaleString()}`} icon="calendar-outline" gradient={['#3b82f6', '#2563eb']} />
+        <SummaryCard title="Collected" count={`₹${stats.totalCollected.toLocaleString()}`} icon="checkmark-done-outline" gradient={['#8b5cf6', '#7c3aed']} />
       </View>
 
       <View style={styles.filterBar}>
-        <View style={[styles.searchContainer, { backgroundColor: colors.surface }]}>
+        <View style={[styles.searchContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Ionicons name="search-outline" size={20} color={colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: colors.text }]}
@@ -755,34 +905,23 @@ export default function Payments() {
         </View>
 
         <TouchableOpacity
-          style={[styles.iconButton, { backgroundColor: colors.surface }]}
+          style={[styles.iconButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
           onPress={() => setIsSortModalVisible(true)}
         >
           <Ionicons name="swap-vertical" size={20} color={colors.primary} />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.iconButton, { backgroundColor: isAnyFilterActive ? colors.primary : colors.surface }]}
+          style={[styles.iconButton, { backgroundColor: isAnyFilterActive ? colors.primary : colors.surface, borderColor: isAnyFilterActive ? colors.primary : colors.border }]}
           onPress={() => setIsFilterModalVisible(true)}
         >
           <Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? '#fff' : colors.textSecondary} />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.addBtn, { backgroundColor: colors.primary }]}
+          style={[styles.addBtn, { backgroundColor: colors.primary, borderColor: colors.primary }]}
           onPress={() => {
-            setEditingInvoice(null);
-            setFormData({
-              client_id: '',
-              client_name: '',
-              shoot_id: null,
-              total_amount: '',
-              due_date: new Date(),
-              payment_method: 'UPI',
-              payment_title: '',
-              present_date: new Date(),
-              first_paid_amount: ''
-            });
+            resetInvoiceForm();
             setModalVisible(true);
           }}
         >
@@ -790,9 +929,32 @@ export default function Payments() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.financialSummaryContainer}>
+        <View style={[styles.financialSummaryCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View style={styles.financialSummaryContent}>
+            <View style={styles.financialSummaryItem}>
+              <Text style={[styles.financialSummaryLabel, { color: colors.textSecondary }]}>Revenue</Text>
+              <Text style={[styles.financialSummaryValue, { color: colors.success }]}>₹{stats.totalCollected.toLocaleString()}</Text>
+            </View>
+            <View style={[styles.financialSummaryDivider, { backgroundColor: colors.border }]} />
+            <View style={styles.financialSummaryItem}>
+              <Text style={[styles.financialSummaryLabel, { color: colors.textSecondary }]}>Expenses</Text>
+              <Text style={[styles.financialSummaryValue, { color: colors.error }]}>₹{totalExpenses.toLocaleString()}</Text>
+            </View>
+            <View style={[styles.financialSummaryDivider, { backgroundColor: colors.border }]} />
+            <View style={styles.financialSummaryItem}>
+              <Text style={[styles.financialSummaryLabel, { color: colors.textSecondary }]}>Profit</Text>
+              <Text style={[styles.financialSummaryValue, { color: profit >= 0 ? colors.success : colors.error }]}>
+                {profit >= 0 ? `₹${profit.toLocaleString()}` : `-₹${Math.abs(profit).toLocaleString()}`}
+              </Text>
+            </View>
+          </View>
+        </View>
+      </View>
+
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }} showsVerticalScrollIndicator={false}>
         {filteredInvoices.length === 0 ? (
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <View style={styles.emptyState}>
             <Ionicons name="document-outline" size={48} color={colors.textTertiary} />
             <Text style={[styles.emptyText, { color: colors.textTertiary }]}>No invoices found</Text>
           </View>
@@ -807,7 +969,7 @@ export default function Payments() {
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>{editingInvoice ? 'Edit Invoice' : 'New Invoice'}</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={24} color={colors.textSecondary} /></TouchableOpacity>
+              <TouchableOpacity onPress={closeInvoiceModal}><Ionicons name="close" size={24} color={colors.textSecondary} /></TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false} style={{ padding: 20 }}>
               <Text style={[styles.label, { color: colors.textSecondary }]}>Client</Text>
@@ -826,7 +988,8 @@ export default function Payments() {
                     <TouchableOpacity
                       style={[styles.pickerItem, { backgroundColor: formData.client_id === String(item.id) ? colors.primary + '20' : colors.background }]}
                       onPress={() => {
-                        setFormData({ ...formData, client_id: String(item.id), client_name: item.name });
+                        setPrefilledShootEventLabel('');
+                        setFormData({ ...formData, client_id: String(item.id), client_name: item.name, shoot_id: null });
                         setClientPickerVisible(false);
                         setClientSearch('');
                       }}
@@ -857,7 +1020,7 @@ export default function Payments() {
                         return (
                           <View style={[styles.pickerItem, { backgroundColor: colors.background, borderColor: colors.border }]}>
                             <View style={{ flex: 1 }}>
-                              <Text style={{ color: colors.text, fontWeight: '600', marginBottom: 4 }}>Invoice: {item.payment_id || `P${item.id}`}</Text>
+                              <Text style={{ color: colors.text, fontWeight: '600', marginBottom: 4 }}>Invoice: {getDisplayPaymentId(item as Invoice)}</Text>
                               <Text style={{ color: colors.textSecondary, fontSize: 12 }}>Total: ₹{item.total_amount.toLocaleString()}</Text>
                               <Text style={{ color: colors.success, fontSize: 12 }}>Paid: ₹{totalPaid.toLocaleString()}</Text>
                               <Text style={{ color: colors.error, fontSize: 12 }}>Balance: ₹{balance.toLocaleString()}</Text>
@@ -872,9 +1035,30 @@ export default function Payments() {
 
               <Text style={[styles.label, { color: colors.textSecondary }]}>Shoot / Event</Text>
               <TouchableOpacity style={[styles.selector, { backgroundColor: colors.background, borderColor: colors.border }]} onPress={() => { if (!formData.client_id) return Alert.alert('Notice', 'Please select a client first'); setShootPickerVisible(true); }}>
-                <Text style={{ color: formData.shoot_id ? colors.text : colors.textTertiary }}>{shoots.find(s => s.id === formData.shoot_id)?.event_type || 'Select Shoot'}</Text>
+                <Text style={{ color: formData.shoot_id || prefilledShootEventLabel ? colors.text : colors.textTertiary }}>{shoots.find(s => s.id === formData.shoot_id)?.event_type || prefilledShootEventLabel || 'Select Shoot'}</Text>
                 <Ionicons name="chevron-down" size={18} color={colors.textTertiary} />
               </TouchableOpacity>
+
+              {shootPickerVisible && (
+                <FlatList
+                  data={shoots.filter(s => String(s.client_id) === String(formData.client_id))}
+                  keyExtractor={item => item.id.toString()}
+                  scrollEnabled={false}
+                  ListEmptyComponent={<Text style={{ color: colors.textTertiary, padding: 10 }}>No shoots found for this client</Text>}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={[styles.pickerItem, { backgroundColor: formData.shoot_id === item.id ? colors.primary + '20' : colors.background }]}
+                      onPress={() => {
+                        setFormData(prev => ({ ...prev, shoot_id: item.id }));
+                        setPrefilledShootEventLabel(item.event_type || '');
+                        setShootPickerVisible(false);
+                      }}
+                    >
+                      <Text style={{ color: colors.text, fontWeight: formData.shoot_id === item.id ? '700' : '600' }}>{item.event_type || `Shoot #${item.id}`}</Text>
+                    </TouchableOpacity>
+                  )}
+                />
+              )}
 
               <Text style={[styles.label, { color: colors.textSecondary }]}>Total Amount</Text>
               <TextInput style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, color: colors.text }]} keyboardType="numeric" placeholder="₹0" placeholderTextColor={colors.textTertiary} value={formData.total_amount} onChangeText={t => setFormData({ ...formData, total_amount: t })} />
@@ -955,7 +1139,13 @@ export default function Payments() {
                 />
               )}
 
-              <TouchableOpacity style={[styles.submitBtn, { backgroundColor: colors.primary }]} onPress={handleSaveInvoice}>
+              <TouchableOpacity
+                style={[styles.submitBtn, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  console.log('Create Invoice button clicked');
+                  handleSaveInvoice();
+                }}
+              >
                 <Text style={styles.submitBtnText}>{editingInvoice ? 'Update Invoice' : 'Create Invoice'}</Text>
               </TouchableOpacity>
               <View style={{ height: 40 }} />
@@ -1145,21 +1335,27 @@ export default function Payments() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  summaryContainer: { flexDirection: 'row', padding: 16, gap: 12 },
-  summaryCard: { flex: 1, borderRadius: 16, padding: 12, elevation: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  summaryContainer: { flexDirection: 'row', paddingHorizontal: 10, gap: 6, marginTop: 10, justifyContent: 'space-between' },
+  summaryCard: { flex: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, borderWidth: 1, overflow: 'hidden' },
+  summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryCount: { fontWeight: '800', fontSize: 16 },
+  summaryCountLight: { color: '#fff' },
   summaryTitle: { fontWeight: '600', fontSize: 12, marginTop: 4 },
+  summaryTitleLight: { color: 'rgba(255,255,255,0.8)' },
   summaryIconContainer: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  filterBar: { flexDirection: 'row', paddingHorizontal: 16, gap: 12, marginBottom: 12, alignItems: 'center' },
-  searchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, borderRadius: 16, height: 48 },
+  summaryIconContainerLight: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  filterBar: { flexDirection: 'row', paddingHorizontal: 16, gap: 10, marginTop: 15, marginBottom: 12, alignItems: 'center' },
+  searchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, height: 44, borderWidth: 1 },
   searchInput: { flex: 1, paddingHorizontal: 8, fontSize: 16 },
-  iconButton: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  addBtn: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  invoiceCard: { borderRadius: 16, overflow: 'hidden', elevation: 2 },
+  iconButton: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, elevation: 2 },
+  addBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, elevation: 2 },
+  invoiceCard: { borderRadius: 16, overflow: 'hidden', elevation: 2, borderWidth: 1 },
   invoiceCardTop: { padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottomWidth: 1 },
-  invoiceId: { fontWeight: '800', fontSize: 18, marginBottom: 4 },
-  invoiceClient: { fontWeight: '600', fontSize: 16 },
-  invoiceDue: { fontSize: 14, marginTop: 4 },
+  invoiceId: { fontWeight: '700', fontSize: 13 },
+  invoiceClient: { fontWeight: '700', fontSize: 18, marginBottom: 8 },
+  invoiceMetaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 },
+  invoiceMetaText: { fontSize: 13, fontWeight: '500' },
+  invoiceMetaDot: { marginHorizontal: 6, fontSize: 12, fontWeight: '700' },
   cardActions: { flexDirection: 'row', gap: 8 },
   actionIconBtn: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   invoiceStatsSection: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 0 },
@@ -1179,8 +1375,9 @@ const styles = StyleSheet.create({
   historyBalance: { fontSize: 11 },
   deletePaymentBtn: { padding: 8 },
   emptyText: { fontSize: 14, fontWeight: '600', marginTop: 16 },
+  emptyState: { flex: 1, minHeight: 260, justifyContent: 'center', alignItems: 'center' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
-  modalContent: { width: '92%', maxHeight: '90%', borderRadius: 30, overflow: 'hidden' },
+  modalContent: { width: '92%', maxHeight: '90%', borderRadius: 24, overflow: 'hidden' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1 },
   modalTitle: { fontSize: 20, fontWeight: '800' },
   label: { fontSize: 13, fontWeight: '700', marginBottom: 8, marginTop: 16 },
@@ -1205,7 +1402,7 @@ const styles = StyleSheet.create({
   submitButton: { padding: 16, borderRadius: 12, alignItems: 'center', backgroundColor: '#007AFF' },
   submitButtonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   financialSummaryContainer: { paddingHorizontal: 16, marginBottom: 12 },
-  financialSummaryCard: { borderRadius: 16, padding: 12, elevation: 2 },
+  financialSummaryCard: { borderRadius: 16, padding: 12, elevation: 2, borderWidth: 1 },
   financialSummaryContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   financialSummaryItem: { flex: 1, alignItems: 'center' },
   financialSummaryLabel: { fontSize: 12, fontWeight: '600', marginBottom: 4 },

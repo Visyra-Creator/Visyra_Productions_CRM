@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Stack, useRouter, useSegments, usePathname } from 'expo-router';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable, Platform, ActivityIndicator, useWindowDimensions, Animated, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { useThemeStore } from '../src/store/themeStore';
 import { useMenuStore } from '../src/store/menuStore';
 import { useAuthStore } from '../src/store/authStore';
@@ -50,6 +51,21 @@ function RootLayoutNav() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadAvatar = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const avatar = (data?.user?.user_metadata?.avatar_url as string | undefined) || null;
+        setAvatarUrl(avatar);
+      } catch (error) {
+        console.error('[layout] avatar load failed:', error);
+      }
+    };
+
+    loadAvatar();
+  }, [segments, user?.id]);
 
   const openEditDetails = () => {
     setProfileDropdownVisible(false);
@@ -393,7 +409,15 @@ function RootLayoutNav() {
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   style={{ marginRight: 8, padding: 8 }}
                 >
-                  <Ionicons name="person-circle-outline" size={28} color={colors.text} />
+                  {avatarUrl ? (
+                    <Image
+                      source={{ uri: avatarUrl }}
+                      style={{ width: 28, height: 28, borderRadius: 14 }}
+                      contentFit="cover"
+                    />
+                  ) : (
+                    <Ionicons name="person-circle-outline" size={28} color={colors.text} />
+                  )}
                 </Pressable>
                 <TouchableOpacity
                   onPress={toggleMenu}

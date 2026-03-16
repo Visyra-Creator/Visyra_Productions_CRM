@@ -130,6 +130,26 @@ export async function create(payload: AppOptionCreateInput): Promise<AppOptionRe
   return normalized;
 }
 
+// Create an option only if the same type+label does not already exist (case-insensitive).
+export async function createIfNotExists(type: string, label: string): Promise<AppOptionRecord | null> {
+  const trimmedType = String(type ?? '').trim();
+  const trimmedLabel = String(label ?? '').trim();
+  if (!trimmedType || !trimmedLabel) return null;
+
+  const normalizedTarget = trimmedLabel.toLowerCase();
+
+  // Check current options first to prevent duplicates.
+  const existing = (await getAll()).find((o: any) =>
+    String(o?.type ?? '').trim() === trimmedType &&
+    String(o?.label ?? '').trim().toLowerCase() === normalizedTarget
+  );
+
+  if (existing) return existing;
+
+  // Use label as value by default to match existing app options conventions.
+  return create({ type: trimmedType, label: trimmedLabel, value: trimmedLabel });
+}
+
 export async function update(id: string, payload: AppOptionUpdateInput): Promise<AppOptionRecord> {
   const { data, error } = await supabase.from(TABLE).update(payload).eq('id', id).select('*').single();
   if (!error) {

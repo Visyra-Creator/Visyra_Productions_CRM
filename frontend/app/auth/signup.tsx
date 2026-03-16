@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   TextInput,
@@ -68,6 +68,11 @@ export default function SignupScreen() {
   const [signupError, setSignupError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const lastExistingAccountKeyRef = useRef<string | null>(null);
+  const lastSignupAttemptAtRef = useRef<number>(0);
+
+  const SIGNUP_COOLDOWN_MS = 30_000;
 
   /**
    * Validate form inputs
@@ -115,6 +120,30 @@ export default function SignupScreen() {
    * Handle signup submission
    */
   const handleSignup = async () => {
+    if (isLoading || isSubmitting) {
+      console.log('Signup request blocked: request already in progress');
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastSignupAttemptAtRef.current;
+    if (lastSignupAttemptAtRef.current > 0 && elapsed < SIGNUP_COOLDOWN_MS) {
+      const remainingSeconds = Math.ceil((SIGNUP_COOLDOWN_MS - elapsed) / 1000);
+      console.log('Signup request blocked: cooldown active', { remainingSeconds });
+      setSignupError(`Please wait ${remainingSeconds}s before trying again.`);
+      return;
+    }
+
+    const normalizedEmail = formData.email.trim().toLowerCase();
+    const normalizedUsername = formData.username.trim().toLowerCase();
+    const accountKey = `${normalizedEmail}::${normalizedUsername}`;
+
+    if (lastExistingAccountKeyRef.current === accountKey) {
+      console.log('Signup request blocked: account already exists for the same input');
+      setSignupError('An account with these details already exists. Please use a different username or email.');
+      return;
+    }
+
     setSignupError(null);
 
     if (!validateForm()) {
@@ -129,24 +158,28 @@ export default function SignupScreen() {
       password: formData.password,
     };
 
-    const result = await signup(signupPayload);
+    try {
+      setIsSubmitting(true);
+      console.log('Signup request triggered');
+      lastSignupAttemptAtRef.current = Date.now();
+      const result = await signup(signupPayload);
 
-    if (result.user) {
-      // Show success message
-      Alert.alert(
-        'Account Created',
-        'Your account has been created successfully! Waiting for admin approval.',
-        [
-          {
-            text: 'Back to Login',
-            onPress: () => {
-              router.replace('/auth/login');
-            },
-          },
-        ]
-      );
-    } else if (result.error) {
-      setSignupError(result.error);
+      if (result.user) {
+        lastExistingAccountKeyRef.current = null;
+        console.log('Signup completed successfully');
+        Alert.alert('Account Created', 'Account created successfully. Waiting for admin approval.');
+        router.replace('/auth/login');
+      } else if (result.error) {
+        if (
+          result.error.toLowerCase().includes('already exists') ||
+          result.error.toLowerCase().includes('already taken')
+        ) {
+          lastExistingAccountKeyRef.current = accountKey;
+        }
+        setSignupError(result.error);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -539,7 +572,7 @@ export default function SignupScreen() {
         {/* Signup Button */}
         <TouchableOpacity
           onPress={handleSignup}
-          disabled={isLoading}
+          disabled={isLoading || isSubmitting}
           style={{
             backgroundColor: colors.primary,
             paddingVertical: 14,
@@ -548,11 +581,11 @@ export default function SignupScreen() {
             justifyContent: 'center',
             alignItems: 'center',
             gap: 8,
-            opacity: isLoading ? 0.7 : 1,
+            opacity: (isLoading || isSubmitting) ? 0.7 : 1,
             marginBottom: 20,
           }}
         >
-          {isLoading ? (
+          {(isLoading || isSubmitting) ? (
             <ActivityIndicator size="small" color="white" />
           ) : (
             <>

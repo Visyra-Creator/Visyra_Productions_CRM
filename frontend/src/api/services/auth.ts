@@ -40,27 +40,40 @@ async function fetchUserRow(id: string): Promise<AuthUser | null> {
     .from('users')
     .select('id, email, name, username, phone, role, approved')
     .eq('id', id)
-    .single();
+    .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
     console.error('[auth] fetchUserRow error:', error?.message);
     return null;
   }
+
+  if (!data) {
+    return null;
+  }
+
   return data as AuthUser;
 }
 
 /** Map raw Supabase / DB error codes to friendly messages. */
 function mapError(message: string, code?: string): string {
+  const normalized = message.toLowerCase();
+
   if (code === '23505') {
     if (message.includes('username')) return 'That username is already taken.';
     if (message.includes('email'))    return 'An account with that email already exists.';
     return 'An account with those details already exists.';
   }
-  if (message.toLowerCase().includes('invalid login credentials')) {
+  if (normalized.includes('email rate limit exceeded') || normalized.includes('rate limit exceeded')) {
+    return 'Too many signup attempts right now. Please wait a few minutes and try again.';
+  }
+  if (normalized.includes('database error saving new user')) {
+    return 'Could not create account. This username may already be taken. Please try a different username.';
+  }
+  if (normalized.includes('invalid login credentials')) {
     return 'Invalid username or password.';
   }
-  if (message.toLowerCase().includes('email not confirmed')) {
-    return 'Please verify your email before logging in.';
+  if (normalized.includes('email not confirmed')) {
+    return 'Your account is not activated yet. Please contact admin if you are already approved.';
   }
   return message;
 }
@@ -74,32 +87,60 @@ function mapError(message: string, code?: string): string {
 //   4. Sign out immediately — user must wait for admin approval before login
 //
 export async function signup(payload: SignupPayload): Promise<AuthResult> {
+  const normalizedName = payload.name.trim();
+  const normalizedUsername = payload.username.trim();
+  const normalizedPhone = payload.phone.trim();
+  const normalizedEmail = payload.email.trim();
+
+  // Pre-check username to avoid generic trigger error from auth signUp
+  const { data: existingEmailForUsername, error: usernameLookupError } = await supabase
+    .rpc('get_email_by_username', { p_username: normalizedUsername });
+
+  if (!usernameLookupError && existingEmailForUsername) {
+    return { user: null, error: 'That username is already taken.' };
+  }
+
   // ── Step 1: create auth user, pass profile fields as metadata ──────────────
   const { data: authData, error: authError } = await supabase.auth.signUp({
-    email:    payload.email,
+    email:    normalizedEmail,
     password: payload.password,
     options: {
       data: {                     // consumed by handle_new_user() trigger
-        name:     payload.name,
-        username: payload.username,
-        phone:    payload.phone,
+        name:     normalizedName,
+        username: normalizedUsername,
+        phone:    normalizedPhone,
       },
     },
   });
 
   if (authError) {
-    return { user: null, error: mapError(authError.message) };
+    return { user: null, error: mapError(authError.message, authError.code) };
   }
 
   if (!authData.user?.id) {
     return { user: null, error: 'Signup failed — no user returned from auth.' };
   }
 
-  // ── Step 2: trigger fires automatically — wait briefly then fetch the row ──
-  // Small delay gives the trigger time to commit before we SELECT.
-  await new Promise(r => setTimeout(r, 500));
+  // ── Step 2: trigger fires automatically — retry fetch briefly for consistency ──
+  let userRow: AuthUser | null = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, 300));
+    }
+    userRow = await fetchUserRow(authData.user.id);
+    if (userRow) break;
+  }
 
-  const userRow = await fetchUserRow(authData.user.id);
+  // If trigger/replication is slightly delayed, return a safe user object so UI can continue.
+  const safeUser: AuthUser = userRow ?? {
+    id: authData.user.id,
+    email: normalizedEmail,
+    name: normalizedName,
+    username: normalizedUsername,
+    phone: normalizedPhone,
+    role: 'employee',
+    approved: false,
+  };
 
   // ── Step 3: sign out — user cannot access the app until admin approves ─────
   const { error: signOutError } = await supabase.auth.signOut();
@@ -109,7 +150,7 @@ export async function signup(payload: SignupPayload): Promise<AuthResult> {
   }
 
   return {
-    user:  userRow,   // may be null if trigger hasn't committed yet (edge case)
+    user:  safeUser,
     error: null,
   };
 }
@@ -146,7 +187,7 @@ export async function login(payload: LoginPayload): Promise<AuthResult> {
   });
 
   if (authError) {
-    return { user: null, error: mapError(authError.message) };
+    return { user: null, error: mapError(authError.message, authError.code) };
   }
 
   if (!authData.user?.id) {

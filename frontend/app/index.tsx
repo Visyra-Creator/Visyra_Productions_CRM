@@ -25,6 +25,7 @@ import * as expensesService from '../src/api/services/expenses';
 import * as portfolioService from '../src/api/services/portfolio';
 import { format } from 'date-fns';
 import { Image } from 'expo-image';
+import { supabase } from '../src/api/supabase';
 
 interface TimelineItem {
   id: string | number;
@@ -75,8 +76,19 @@ export default function Dashboard() {
   });
   const [timelineData, setTimelineData] = useState<TimelineItem[]>([]);
   const [recentPortfolio, setRecentPortfolio] = useState<PortfolioImage[]>([]);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
 
   const loadingRef = useRef(false);
+
+  const loadProfileAvatar = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getUser();
+      const avatar = (data?.user?.user_metadata?.avatar_url as string | undefined) || null;
+      setProfileAvatarUrl(avatar);
+    } catch (error) {
+      console.error('[Dashboard] Failed to load profile avatar:', error);
+    }
+  }, []);
 
   // Handle Exit Confirmation
   useFocusEffect(
@@ -92,6 +104,12 @@ export default function Dashboard() {
       const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       return () => subscription.remove();
     }, [])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProfileAvatar();
+    }, [loadProfileAvatar])
   );
 
   const loadData = async () => {
@@ -461,8 +479,15 @@ export default function Dashboard() {
                 {format(new Date(), 'EEEE, MMMM d, yyyy')}
               </Text>
             </View>
-            <TouchableOpacity style={[styles.profileButton, { backgroundColor: colors.surface }]}>
-              <Ionicons name="person" size={20} color={colors.primary} />
+            <TouchableOpacity
+              style={[styles.profileButton, { backgroundColor: colors.surface }]}
+              onPress={() => router.push('/profile')}
+            >
+              {profileAvatarUrl ? (
+                <Image source={{ uri: profileAvatarUrl }} style={styles.profileAvatarImage} contentFit="cover" />
+              ) : (
+                <Ionicons name="person" size={20} color={colors.primary} />
+              )}
             </TouchableOpacity>
           </View>
 
@@ -1174,6 +1199,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 2,
+  },
+  profileAvatarImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   section: {
     paddingHorizontal: 24,
