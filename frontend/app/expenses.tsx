@@ -23,8 +23,27 @@ import { format, parseISO, startOfMonth, endOfMonth, isWithinInterval, startOfYe
 
 interface AppOption {
   id: number;
+  type: string;
   label: string;
+  value: string;
 }
+
+const EXPENSE_CATEGORIES_DEFAULTS = [
+  { label: 'Equipment', value: 'equipment' },
+  { label: 'Travel', value: 'travel' },
+  { label: 'Freelancers', value: 'freelancers' },
+  { label: 'Studio', value: 'studio' },
+  { label: 'Marketing', value: 'marketing' },
+  { label: 'Software', value: 'software' },
+  { label: 'Operations', value: 'operations' },
+  { label: 'Other', value: 'other' },
+];
+
+const EXPENSE_STATUSES_DEFAULTS = [
+  { label: 'Paid', value: 'paid' },
+  { label: 'Pending', value: 'pending' },
+  { label: 'Scheduled', value: 'scheduled' },
+];
 
 export default function Expenses() {
   const { colors } = useThemeStore();
@@ -33,6 +52,8 @@ export default function Expenses() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [shoots, setShoots] = useState<any[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<AppOption[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<AppOption[]>([]);
+  const [expenseStatuses, setExpenseStatuses] = useState<AppOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [isCalcVisible, setIsCalcVisible] = useState(false);
@@ -81,13 +102,33 @@ export default function Expenses() {
     shoot_id: null as number | null,
   });
 
-  const categories = ['Equipment', 'Travel', 'Freelancers', 'Studio', 'Marketing', 'Software', 'Operations', 'Other'];
-  const statusOptions = ['paid', 'pending', 'scheduled'];
-
   const loadData = useCallback(async () => {
     try {
       const db = getDatabase();
-      const [expResult, shootResult, methodResult] = await Promise.all([
+
+      // Seed default expense categories if they don't exist
+      const existingCats = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_category'");
+      if (existingCats.length === 0) {
+        for (const cat of EXPENSE_CATEGORIES_DEFAULTS) {
+          await db.runAsync(
+            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
+            ['expense_category', cat.label, cat.value]
+          );
+        }
+      }
+
+      // Seed default expense statuses if they don't exist
+      const existingStatuses = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_status'");
+      if (existingStatuses.length === 0) {
+        for (const status of EXPENSE_STATUSES_DEFAULTS) {
+          await db.runAsync(
+            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
+            ['expense_status', status.label, status.value]
+          );
+        }
+      }
+
+      const [expResult, shootResult, methodResult, catResult, statusResult] = await Promise.all([
         db.getAllAsync(
           `SELECT e.*, s.event_type as shoot_name
            FROM expenses e
@@ -95,11 +136,15 @@ export default function Expenses() {
            ORDER BY e.date DESC`
         ),
         db.getAllAsync('SELECT id, event_type FROM shoots'),
-        db.getAllAsync("SELECT id, label FROM app_options WHERE type = 'payment_method' ORDER BY label ASC")
+        db.getAllAsync("SELECT * FROM app_options WHERE type = 'payment_method' ORDER BY label ASC"),
+        db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_category' ORDER BY id ASC"),
+        db.getAllAsync("SELECT * FROM app_options WHERE type = 'expense_status' ORDER BY id ASC")
       ]);
       setExpenses(expResult as any[]);
       setShoots(shootResult as any[]);
       setPaymentMethods(methodResult as AppOption[]);
+      setExpenseCategories(catResult as AppOption[]);
+      setExpenseStatuses(statusResult as AppOption[]);
 
       if (methodResult.length > 0 && !formData.payment_method) {
         setFormData(prev => ({ ...prev, payment_method: (methodResult[0] as AppOption).label }));
@@ -586,13 +631,13 @@ export default function Expenses() {
 
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Category</Text>
                 <View style={styles.chipPicker}>
-                  {categories.map((cat) => (
+                  {expenseCategories.map((cat) => (
                     <TouchableOpacity
-                      key={cat}
-                      style={[styles.chip, { backgroundColor: formData.category === cat ? colors.primary : colors.background, borderColor: colors.border }]}
-                      onPress={() => setFormData({ ...formData, category: cat })}
+                      key={cat.value}
+                      style={[styles.chip, { backgroundColor: formData.category === cat.value ? colors.primary : colors.background, borderColor: colors.border }]}
+                      onPress={() => setFormData({ ...formData, category: cat.value })}
                     >
-                      <Text style={[styles.chipText, { color: formData.category === cat ? '#fff' : colors.text }]}>{cat}</Text>
+                      <Text style={[styles.chipText, { color: formData.category === cat.value ? '#fff' : colors.text }]}>{cat.label}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -612,13 +657,13 @@ export default function Expenses() {
 
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Status</Text>
                 <View style={styles.chipPicker}>
-                  {statusOptions.map((s) => (
+                  {expenseStatuses.map((s) => (
                     <TouchableOpacity
-                      key={s}
-                      style={[styles.chip, { backgroundColor: formData.status === s ? colors.primary : colors.background, borderColor: colors.border }]}
-                      onPress={() => setFormData({ ...formData, status: s })}
+                      key={s.value}
+                      style={[styles.chip, { backgroundColor: formData.status === s.value ? colors.primary : colors.background, borderColor: colors.border }]}
+                      onPress={() => setFormData({ ...formData, status: s.value })}
                     >
-                      <Text style={[styles.chipText, { color: formData.status === s ? '#fff' : colors.text }]}>{s.toUpperCase()}</Text>
+                      <Text style={[styles.chipText, { color: formData.status === s.value ? '#fff' : colors.text }]}>{s.label.toUpperCase()}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>

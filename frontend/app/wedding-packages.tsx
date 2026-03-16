@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
 import { LinearGradient } from 'expo-linear-gradient';
+import { colors } from '@/src/theme/colors';
 
 interface Package {
   id: number;
@@ -30,6 +31,12 @@ interface Package {
   covers: string;
   team_type: string;
   team_size: number;
+}
+
+interface CustomSection {
+  label: string;
+  icon: string;
+  type: string;
 }
 
 const WEDDING_SECTION_TYPES = [
@@ -55,9 +62,24 @@ export default function WeddingPackages() {
   const [isActionMenuVisible, setIsActionMenuVisible] = useState(false);
   const [isTeamPickerVisible, setIsTeamPickerVisible] = useState(false);
   const [isBuilderVisible, setIsBuilderVisible] = useState(false);
+  const [isAddSectionModalVisible, setIsAddSectionModalVisible] = useState(false);
+  const [isEditSectionModalVisible, setIsEditSectionModalVisible] = useState(false);
+  const [editingSection, setEditingSection] = useState<CustomSection | null>(null);
 
   // Package Builder State
   const [selectedPackageIds, setSelectedPackageIds] = useState<number[]>([]);
+
+  // Dynamic Sections State
+  const [customSections, setCustomSections] = useState<Array<{ label: string; icon: string; type: string }>>([]);
+  const [newSectionData, setNewSectionData] = useState({
+    label: '',
+    type: '',
+    icon: 'add-circle-outline'
+  });
+
+  // Edit Package State
+  const [editingPackage, setEditingPackage] = useState<Package | null>(null);
+  const [isEditPackageModalVisible, setIsEditPackageModalVisible] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -74,7 +96,8 @@ export default function WeddingPackages() {
   const loadPackages = async () => {
     try {
       const db = getDatabase();
-      const typeList = WEDDING_SECTION_TYPES.map(t => `'${t.type}'`).join(', ');
+      const allTypes = [...WEDDING_SECTION_TYPES, ...customSections].map(t => t.type);
+      const typeList = allTypes.map(type => `'${type}'`).join(', ');
       const result = await db.getAllAsync(
         `SELECT * FROM packages WHERE event_type IN (${typeList}, 'Wedding') ORDER BY price ASC`
       );
@@ -89,12 +112,13 @@ export default function WeddingPackages() {
   }, []);
 
   const sections = useMemo(() => {
-    return WEDDING_SECTION_TYPES.map(section => ({
+    const allSections = [...WEDDING_SECTION_TYPES, ...customSections];
+    return allSections.map(section => ({
       title: section.label,
       type: section.type,
       data: packages.filter(p => p.event_type === section.type || (section.type === 'Wedding Package' && p.event_type === 'Wedding'))
     })).filter(section => section.data.length > 0 || !isBuilderVisible);
-  }, [packages, isBuilderVisible]);
+  }, [packages, isBuilderVisible, customSections]);
 
   const totalCalculatedPrice = useMemo(() => {
     return selectedPackageIds.reduce((sum, id) => {
@@ -123,6 +147,82 @@ export default function WeddingPackages() {
     });
     setIsActionMenuVisible(false);
     setIsModalVisible(true);
+  };
+
+  const handleAddSection = () => {
+    setIsActionMenuVisible(false);
+    setIsAddSectionModalVisible(true);
+  };
+
+  const handleCreateSection = () => {
+    if (!newSectionData.label || !newSectionData.type) {
+      Alert.alert('Error', 'Section name and type are required');
+      return;
+    }
+
+    const newSection = {
+      label: newSectionData.label,
+      icon: newSectionData.icon || 'add-circle-outline',
+      type: newSectionData.type
+    };
+
+    setCustomSections(prev => [...prev, newSection]);
+    setIsAddSectionModalVisible(false);
+    setNewSectionData({ label: '', type: '', icon: '' });
+    Alert.alert('Success', 'New section created');
+  };
+
+  const handleEditSection = (section: CustomSection) => {
+    setEditingSection(section);
+    setNewSectionData({
+      label: section.label,
+      type: section.type,
+      icon: section.icon
+    });
+    setIsEditSectionModalVisible(true);
+  };
+
+  const handleUpdateSection = () => {
+    if (!newSectionData.label || !newSectionData.type || !editingSection) {
+      Alert.alert('Error', 'Section name and type are required');
+      return;
+    }
+
+    setCustomSections(prev => prev.map(section =>
+      section.type === editingSection.type
+        ? { label: newSectionData.label, icon: newSectionData.icon || 'add-circle-outline', type: newSectionData.type }
+        : section
+    ));
+    setIsEditSectionModalVisible(false);
+    setEditingSection(null);
+    setNewSectionData({ label: '', type: '', icon: '' });
+    Alert.alert('Success', 'Section updated');
+  };
+
+  const handleDeleteSection = (sectionType: string) => {
+    Alert.alert(
+      'Delete Section',
+      'This will delete the section and all packages in it. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const db = getDatabase();
+              await db.runAsync('DELETE FROM packages WHERE event_type = ?', [sectionType]);
+              setCustomSections(prev => prev.filter(s => s.type !== sectionType));
+              loadPackages();
+              Alert.alert('Success', 'Section and its packages deleted');
+            } catch (error) {
+              console.error('Error deleting section:', error);
+              Alert.alert('Error', 'Failed to delete section');
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleAddPackage = async () => {
@@ -167,9 +267,25 @@ export default function WeddingPackages() {
         <View style={styles.nameContainer}>
           <Text style={[styles.packageName, { color: colors.text }]}>{item.name}</Text>
         </View>
-        <Text style={[styles.packagePrice, { color: colors.accent }]}>
-          ₹{item.price?.toLocaleString()}
-        </Text>
+        <View style={styles.priceAndActions}>
+          <Text style={[styles.packagePrice, { color: colors.accent }]}>
+            ₹{item.price?.toLocaleString()}
+          </Text>
+          <View style={styles.packageHeaderActions}>
+            <TouchableOpacity
+              style={[styles.actionIcon, { backgroundColor: colors.primary + '20' }]}
+              onPress={() => handleEditPackage(item)}
+            >
+              <Ionicons name="create-outline" size={20} color={colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionIcon, { backgroundColor: colors.accent + '20' }]}
+              onPress={() => handleDeletePackage(item.id)}
+            >
+              <Ionicons name="trash-outline" size={20} color={colors.accent} />
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
 
       <View style={styles.divider} />
@@ -214,12 +330,248 @@ export default function WeddingPackages() {
           {item.description}
         </Text>
       ) : null}
-
-      <TouchableOpacity style={[styles.editBtn, { borderColor: colors.border }]}>
-        <Text style={{ color: colors.primary, fontWeight: '600' }}>Edit Details</Text>
-      </TouchableOpacity>
     </View>
   );
+
+  const handleEditPackage = (packageItem: Package) => {
+    setEditingPackage(packageItem);
+    setFormData({
+      name: packageItem.name,
+      event_type: packageItem.event_type,
+      price: packageItem.price.toString(),
+      duration_hours: packageItem.duration_hours.toString(),
+      covers: packageItem.covers || '',
+      team_type: packageItem.team_type || 'Photo + Video (Standard)',
+      team_size: packageItem.team_size.toString(),
+      deliverables: packageItem.deliverables || '',
+      description: packageItem.description || '',
+    });
+    setIsEditPackageModalVisible(true);
+  };
+
+  const handleUpdatePackage = async () => {
+    if (!editingPackage || !formData.name || !formData.price) {
+      Alert.alert('Error', 'Name and Price are required');
+      return;
+    }
+
+    try {
+      const db = getDatabase();
+      await db.runAsync(
+        'UPDATE packages SET name = ?, price = ?, duration_hours = ?, covers = ?, team_type = ?, team_size = ?, deliverables = ?, description = ? WHERE id = ?',
+        [
+          formData.name,
+          parseFloat(formData.price),
+          parseInt(formData.duration_hours) || 0,
+          formData.covers,
+          formData.team_type,
+          parseInt(formData.team_size) || 0,
+          formData.deliverables,
+          formData.description,
+          editingPackage.id
+        ]
+      );
+
+      setIsEditPackageModalVisible(false);
+      setEditingPackage(null);
+      loadPackages();
+      Alert.alert('Success', 'Package updated');
+    } catch (error) {
+      console.error('Error updating package:', error);
+      Alert.alert('Error', 'Failed to update package');
+    }
+  };
+
+  const renderEditPackageModal = () => (
+    <Modal
+      visible={isEditPackageModalVisible}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={() => setIsEditPackageModalVisible(false)}
+    >
+      <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalContainer}
+        >
+          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>Edit {editingPackage?.name}</Text>
+                <Text style={[styles.modalSubtitle, { color: colors.textTertiary }]}>Update package details</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsEditPackageModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.formContent} showsVerticalScrollIndicator={false}>
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>
+                  {editingPackage?.event_type === 'Additional Event Coverage' ? 'Event Name *' :
+                   editingPackage?.event_type === 'Additional Services' ? 'Service Name *' :
+                   editingPackage?.event_type === 'Additional Deliverables' ? 'Deliverable Name *' :
+                   'Package Name *'}
+                </Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                  value={formData.name}
+                  onChangeText={(text) => setFormData({ ...formData, name: text })}
+                  placeholder="Enter name"
+                  placeholderTextColor={colors.textTertiary}
+                />
+              </View>
+
+              {editingPackage?.event_type === 'Wedding Package' ? (
+                <>
+                  <View style={styles.inputRow}>
+                    <View style={[styles.inputGroup, { flex: 1, marginRight: 12 }]}>
+                      <Text style={[styles.label, { color: colors.textSecondary }]}>Duration (Hrs)</Text>
+                      <TextInput
+                        style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                        value={formData.duration_hours}
+                        onChangeText={(text) => setFormData({ ...formData, duration_hours: text })}
+                        placeholder="e.g. 12"
+                        placeholderTextColor={colors.textTertiary}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                    <View style={[styles.inputGroup, { flex: 1 }]}>
+                      <Text style={[styles.label, { color: colors.textSecondary }]}>Covers</Text>
+                      <TextInput
+                        style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                        value={formData.covers}
+                        onChangeText={(text) => setFormData({ ...formData, covers: text })}
+                        placeholder="e.g. Traditional"
+                        placeholderTextColor={colors.textTertiary}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.inputRow}>
+                    <View style={[styles.inputGroup, { flex: 2, marginRight: 12 }]}>
+                      <Text style={[styles.label, { color: colors.textSecondary }]}>Team Type</Text>
+                      <TouchableOpacity
+                        style={[styles.input, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
+                        onPress={() => setIsTeamPickerVisible(true)}
+                      >
+                        <Text style={{ color: colors.text, fontSize: 14 }} numberOfLines={1}>{formData.team_type}</Text>
+                        <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={[styles.inputGroup, { flex: 1 }]}>
+                      <Text style={[styles.label, { color: colors.textSecondary }]}>Persons</Text>
+                      <TextInput
+                        style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                        value={formData.team_size}
+                        onChangeText={(text) => setFormData({ ...formData, team_size: text })}
+                        placeholder="No."
+                        placeholderTextColor={colors.textTertiary}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Deliverables</Text>
+                    <TextInput
+                      style={[styles.input, styles.textArea, { backgroundColor: colors.background, color: colors.text }]}
+                      value={formData.deliverables}
+                      onChangeText={(text) => setFormData({ ...formData, deliverables: text })}
+                      placeholder="What's included?"
+                      placeholderTextColor={colors.textTertiary}
+                      multiline
+                      numberOfLines={3}
+                    />
+                  </View>
+                </>
+              ) : (
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Description/Details</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea, { backgroundColor: colors.background, color: colors.text }]}
+                    value={formData.deliverables}
+                    onChangeText={(text) => setFormData({ ...formData, deliverables: text })}
+                    placeholder="Describe the service or items"
+                    placeholderTextColor={colors.textTertiary}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+              )}
+
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Price (₹) *</Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                  value={formData.price}
+                  onChangeText={(text) => setFormData({ ...formData, price: text })}
+                  placeholder="Amount"
+                  placeholderTextColor={colors.textTertiary}
+                  keyboardType="numeric"
+                />
+              </View>
+
+              {editingPackage?.event_type === 'Wedding Package' && (
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Additional Notes</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea, { backgroundColor: colors.background, color: colors.text }]}
+                    value={formData.description}
+                    onChangeText={(text) => setFormData({ ...formData, description: text })}
+                    placeholder="Special mentions or terms..."
+                    placeholderTextColor={colors.textTertiary}
+                    multiline
+                    numberOfLines={3}
+                  />
+                </View>
+              )}
+
+              <View style={styles.buttonRow}>
+                <TouchableOpacity
+                  style={[styles.submitButton, { backgroundColor: colors.primary, flex: 1, marginRight: 8 }]}
+                  onPress={handleUpdatePackage}
+                >
+                  <Text style={styles.submitButtonText}>Update Package</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitButton, { backgroundColor: colors.accent, flex: 1, marginLeft: 8 }]}
+                  onPress={() => setIsEditPackageModalVisible(false)}
+                >
+                  <Text style={styles.submitButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
+
+  const handleDeletePackage = (packageId: number) => {
+    Alert.alert(
+      'Delete Package',
+      'Are you sure you want to delete this package?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const db = getDatabase();
+              await db.runAsync('DELETE FROM packages WHERE id = ?', [packageId]);
+              loadPackages();
+              Alert.alert('Success', 'Package deleted');
+            } catch (error) {
+              console.error('Error deleting package:', error);
+              Alert.alert('Error', 'Failed to delete package');
+            }
+          }
+        }
+      ]
+    );
+  };
 
   const BuilderItem = ({ item }: { item: Package }) => {
     const isSelected = selectedPackageIds.includes(item.id);
@@ -344,7 +696,7 @@ export default function WeddingPackages() {
             <Text style={[styles.actionMenuTitle, { color: colors.text }]}>Select Category</Text>
             {WEDDING_SECTION_TYPES.map((action, index) => (
               <TouchableOpacity
-                key={index}
+                key={`predefined-${index}`}
                 style={[styles.actionMenuItem, { borderBottomColor: colors.border }]}
                 onPress={() => handleOpenAddModal(action.type)}
               >
@@ -355,6 +707,29 @@ export default function WeddingPackages() {
                 <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
               </TouchableOpacity>
             ))}
+            {customSections.map((section, index) => (
+              <TouchableOpacity
+                key={`custom-${index}`}
+                style={[styles.actionMenuItem, { borderBottomColor: colors.border }]}
+                onPress={() => handleOpenAddModal(section.type)}
+              >
+                <View style={[styles.actionIconContainer, { backgroundColor: colors.accent + '15' }]}>
+                  <Ionicons name={section.icon as any} size={24} color={colors.accent} />
+                </View>
+                <Text style={[styles.actionMenuText, { color: colors.text }]}>{section.label}</Text>
+                <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.actionMenuItem, { borderBottomColor: colors.border }]}
+              onPress={handleAddSection}
+            >
+              <View style={[styles.actionIconContainer, { backgroundColor: colors.accent + '15' }]}>
+                <Ionicons name="add-circle-outline" size={24} color={colors.accent} />
+              </View>
+              <Text style={[styles.actionMenuText, { color: colors.text }]}>Add a New Section</Text>
+              <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -373,6 +748,81 @@ export default function WeddingPackages() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Add Section Modal */}
+      <Modal
+        visible={isAddSectionModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsAddSectionModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalContainer}
+          >
+            <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={[styles.modalTitle, { color: colors.text }]}>New Section</Text>
+                  <Text style={[styles.modalSubtitle, { color: colors.textTertiary }]}>Create a custom category</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsAddSectionModalVisible(false)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.formContent} showsVerticalScrollIndicator={false}>
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Section Name *</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                    value={newSectionData.label}
+                    onChangeText={(text) => setNewSectionData({ ...newSectionData, label: text })}
+                    placeholder="e.g. Premium Add-ons"
+                    placeholderTextColor={colors.textTertiary}
+                  />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Section Type *</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                    value={newSectionData.type}
+                    onChangeText={(text) => setNewSectionData({ ...newSectionData, type: text })}
+                    placeholder="e.g. Premium Add-ons"
+                    placeholderTextColor={colors.textTertiary}
+                  />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={[styles.label, { color: colors.textSecondary }]}>Icon Name (optional)</Text>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.background, color: colors.text }]}
+                    value={newSectionData.icon}
+                    onChangeText={(text) => setNewSectionData({ ...newSectionData, icon: text })}
+                    placeholder="e.g. star-outline"
+                    placeholderTextColor={colors.textTertiary}
+                  />
+                  <Text style={[styles.helperText, { color: colors.textSecondary }]}>
+                    Use Ionicons names (e.g., star-outline, gift-outline, diamond-outline)
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.submitButton, { backgroundColor: colors.accent }]}
+                  onPress={handleCreateSection}
+                >
+                  <Text style={styles.submitButtonText}>Create Section</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Edit Package Modal */}
+      {renderEditPackageModal()}
 
       {/* Add/Edit Modal */}
       <Modal
@@ -555,6 +1005,7 @@ const styles = StyleSheet.create({
   packageHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
   nameContainer: { flex: 1 },
   packageName: { fontSize: 20, fontWeight: '800', marginBottom: 4 },
+  priceAndActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   packagePrice: { fontSize: 22, fontWeight: '900' },
   divider: { height: 1, backgroundColor: 'rgba(0,0,0,0.05)', marginBottom: 16 },
   infoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginBottom: 16 },
@@ -564,7 +1015,14 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 13, fontWeight: '700', marginBottom: 4 },
   deliverablesText: { fontSize: 13, lineHeight: 18 },
   description: { fontSize: 12, fontStyle: 'italic', marginBottom: 16 },
+
   editBtn: { alignSelf: 'stretch', alignItems: 'center', paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginTop: 4 },
+  packageActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 16, flex: 1 },
+  actionBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  packageHeaderActions: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  actionIcon: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  buttonRow: { flexDirection: 'row', gap: 8, marginTop: 12, marginBottom: 24 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
   modalContainer: { width: '92%', maxHeight: '85%' },
@@ -614,4 +1072,5 @@ const styles = StyleSheet.create({
   totalAmount: { fontSize: 22, fontWeight: '900' },
   continueBtn: { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 16, elevation: 4 },
   continueBtnText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  helperText: { fontSize: 12, color: colors.textTertiary, marginTop: 4 },
 });

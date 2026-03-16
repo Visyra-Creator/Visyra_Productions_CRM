@@ -56,18 +56,20 @@ interface Client {
 
 interface AppOption {
   id: number;
+  type: string;
   label: string;
+  value: string;
+  color: string;
 }
 
-const CLIENT_STATUSES = [
-  { key: 'all', label: 'All Clients' },
-  { key: 'booked', label: 'Booked', color: '#3b82f6' },
-  { key: 'scheduled', label: 'Scheduled', color: '#8b5cf6' },
-  { key: 'shoot completed', label: 'Shoot Completed', color: '#10b981' },
-  { key: 'editing', label: 'Editing', color: '#f59e0b' },
-  { key: 'delivered', label: 'Delivered', color: '#059669' },
-  { key: 'closed', label: 'Closed', color: '#6b7280' },
-  { key: 'cancelled', label: 'Cancelled', color: '#ef4444' },
+const CLIENT_STATUSES_DEFAULTS = [
+  { label: 'Booked', value: 'booked', color: '#3b82f6' },
+  { label: 'Scheduled', value: 'scheduled', color: '#8b5cf6' },
+  { label: 'Shoot Completed', value: 'shoot completed', color: '#10b981' },
+  { label: 'Editing', value: 'editing', color: '#f59e0b' },
+  { label: 'Delivered', value: 'delivered', color: '#059669' },
+  { label: 'Closed', value: 'closed', color: '#6b7280' },
+  { label: 'Cancelled', value: 'cancelled', color: '#ef4444' },
 ];
 
 // month names used in summary picker
@@ -112,6 +114,7 @@ export default function Clients() {
   const [eventTypes, setEventTypes] = useState<AppOption[]>([]);
   const [leadSources, setLeadSources] = useState<AppOption[]>([]);
   const [availablePackages, setAvailablePackages] = useState<AppOption[]>([]);
+  const [clientStatuses, setClientStatuses] = useState<AppOption[]>([]);
 
   // UI State
   const [modalVisible, setModalVisible] = useState(false);
@@ -203,6 +206,17 @@ export default function Clients() {
       setDbReady(true);
       setLoading(true);
 
+      // Seed default statuses if they don't exist
+      const existingStatuses = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'client_status'");
+      if (existingStatuses.length === 0) {
+        for (const status of CLIENT_STATUSES_DEFAULTS) {
+          await db.runAsync(
+            "INSERT INTO app_options (type, label, value, color) VALUES (?, ?, ?, ?)",
+            ['client_status', status.label, status.value, status.color]
+          );
+        }
+      }
+
       // Load clients
       const result = await db.getAllAsync('SELECT * FROM clients ORDER BY id ASC');
       const allClients = result as Client[];
@@ -220,6 +234,10 @@ export default function Clients() {
       // Load lead sources
       const leadSourcesResult = await db.getAllAsync('SELECT id, label FROM app_options WHERE type = "lead_source" ORDER BY label ASC');
       setLeadSources(leadSourcesResult as AppOption[]);
+
+      // Load client statuses
+      const clientStatusResult = await db.getAllAsync('SELECT * FROM app_options WHERE type = "client_status" ORDER BY id ASC');
+      setClientStatuses(clientStatusResult as AppOption[]);
 
       // Calculate Stats
       let todayCount = 0;
@@ -807,7 +825,7 @@ export default function Clients() {
   };
 
   const getStatusColor = (status: string) => {
-    return CLIENT_STATUSES.find(s => s.key === (status || 'booked').toLowerCase())?.color || colors.textTertiary;
+    return clientStatuses.find(s => s.value === (status || 'booked').toLowerCase())?.color || colors.textTertiary;
   };
 
   const DetailRow = ({ label, value, icon }: { label: string, value: string | undefined, icon: any }) => (
@@ -1202,9 +1220,9 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
                 <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.status === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, status: 'all' })}>
                   <Text style={{ color: filters.status === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
                 </TouchableOpacity>
-                {CLIENT_STATUSES.filter(s => s.key !== 'all').map(s => (
-                  <TouchableOpacity key={s.key} style={[styles.filterChip, { backgroundColor: filters.status === s.key ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, status: s.key })}>
-                    <Text style={{ color: filters.status === s.key ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>{s.label}</Text>
+                {clientStatuses.map(status => (
+                  <TouchableOpacity key={status.value} style={[styles.filterSourceChip, { backgroundColor: filters.status === status.value ? colors.primary : colors.background, borderColor: colors.border }]} onPress={() => setFilters(prev => ({ ...prev, status: status.value }))}>
+                    <Text style={[styles.filterSourceText, { color: filters.status === status.value ? '#fff' : colors.text }]}>{status.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1253,7 +1271,17 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           </View>
           <TouchableOpacity activeOpacity={1} style={{ flex: 1, width: '100%' }} onPress={() => setIsFilterModalVisible(false)} />
         </View>
-        {activePicker && <DateTimePicker value={filters[activePicker as keyof typeof filters] ? parseISO(filters[activePicker as keyof typeof filters] as string) : new Date()} mode="date" onChange={onFilterDatePickerChange} />}
+        {activePicker && <DateTimePicker value={activePicker === 'startDate' ? (formData.event_date ? parseISO(formData.event_date) : new Date()) : (formData.event_end_date ? parseISO(formData.event_end_date) : new Date())} mode="date" onChange={(event, selectedDate) => {
+          if (selectedDate) {
+            const formattedDate = format(selectedDate, 'yyyy-MM-dd');
+            if (activePicker === 'startDate') {
+              setFormData({ ...formData, event_date: formattedDate });
+            } else {
+              setFormData({ ...formData, event_end_date: formattedDate });
+            }
+          }
+          setActivePicker(null);
+        }} />}
       </Modal>
 
       {/* Add/Edit Modal */}

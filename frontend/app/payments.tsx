@@ -51,7 +51,21 @@ interface PaymentRecord {
 
 interface Client { id: number; name: string; }
 interface Shoot { id: number; client_id: number; event_type: string; }
-interface AppOption { id: number; label: string; }
+interface AppOption {
+  id: number;
+  type: string;
+  label: string;
+  value: string;
+  color: string;
+}
+
+const PAYMENT_METHODS_DEFAULTS = [
+  { label: 'Cash', value: 'cash' },
+  { label: 'Credit Card', value: 'credit_card' },
+  { label: 'Bank Transfer', value: 'bank_transfer' },
+  { label: 'UPI', value: 'upi' },
+  { label: 'Cheque', value: 'cheque' },
+];
 
 export default function Payments() {
   const SortOption = ({ label, value, icon }: { label: string; value: string; icon: any }) => (
@@ -140,6 +154,17 @@ export default function Payments() {
       if (!db) { setDbReady(false); return; }
       setDbReady(true);
       setLoading(true);
+
+      // Seed default payment methods if they don't exist
+      const existingMethods = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'payment_method'");
+      if (existingMethods.length === 0) {
+        for (const method of PAYMENT_METHODS_DEFAULTS) {
+          await db.runAsync(
+            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
+            ['payment_method', method.label, method.value]
+          );
+        }
+      }
 
       const [inv, pr, c, s, methods] = await Promise.all([
         db.getAllAsync(`SELECT p.*, c.name as client_name, s.event_type FROM payments p LEFT JOIN clients c ON p.client_id = c.id LEFT JOIN shoots s ON p.shoot_id = s.id ORDER BY p.created_at DESC`),
