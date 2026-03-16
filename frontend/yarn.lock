@@ -3569,6 +3569,13 @@ expo-image-manipulator@~14.0.8:
   dependencies:
     expo-image-loader "~6.0.0"
 
+expo-image-picker@~17.0.10:
+  version "17.0.10"
+  resolved "https://registry.npmjs.org/expo-image-picker/-/expo-image-picker-17.0.10.tgz"
+  integrity sha512-a2xrowp2trmvXyUWgX3O6Q2rZaa2C59AqivKI7+bm+wLvMfTEbZgldLX4rEJJhM8xtmEDTNU+lzjtObwzBRGaw==
+  dependencies:
+    expo-image-loader "~6.0.0"
+
 expo-image@~3.0.11:
   version "3.0.11"
   resolved "https://registry.npmjs.org/expo-image/-/expo-image-3.0.11.tgz"
@@ -3638,6 +3645,11 @@ expo-router@*, expo-router@~6.0.22:
     shallowequal "^1.1.0"
     use-latest-callback "^0.2.1"
     vaul "^1.1.2"
+
+expo-secure-store@~15.0.8:
+  version "15.0.8"
+  resolved "https://registry.npmjs.org/expo-secure-store/-/expo-secure-store-15.0.8.tgz"
+  integrity sha512-lHnzvRajBu4u+P99+0GEMijQMFCOYpWRO4dWsXSuMt77+THPIGjzNvVKrGSl6mMrLsfVaKL8BpwYZLGlgA+zAw==
 
 expo-server@^1.0.5:
   version "1.0.5"

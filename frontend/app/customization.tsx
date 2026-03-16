@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,246 +9,213 @@ import {
   TextInput,
   Alert,
   FlatList,
-  Platform,
-  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { getDatabase } from '../src/database/db';
-import { useRouter } from 'expo-router';
 
 interface AppOption {
   id: number;
-  type: string;
   label: string;
+  type: string;
 }
 
-type OptionType = 'lead_source' | 'event_type' | 'payment_method' | 'shoot_category';
+  const customizationSections = [
+  {
+    title: 'Leads Page',
+    options: [
+      { label: 'Lead Source', type: 'lead_source' },
+      { label: 'Lead Stage', type: 'lead_stage' },
+    ],
+  },
+  {
+    title: 'Clients Page',
+    options: [
+      { label: 'Event Type', type: 'event_type' },
+      { label: 'Packages', type: 'package' },
+      { label: 'Lead Source', type: 'lead_source' },
+      { label: 'Status', type: 'client_status' },
+    ],
+  },
+  {
+    title: 'Shoots Page',
+    options: [{ label: 'Event Type', type: 'event_type' }],
+  },
+  {
+    title: 'Payments Page',
+    options: [{ label: 'Payment Method', type: 'payment_method' }],
+  },
+  {
+    title: 'Expenses Page',
+    options: [
+      { label: 'Payment Method', type: 'payment_method' },
+      { label: 'Status', type: 'expense_status' },
+      { label: 'Linked Shoot/Event', type: 'linked_shoot_event' },
+    ],
+  },
+  {
+    title: 'Locations Page',
+    options: [{ label: 'Type', type: 'location_type' }],
+  },
+];
 
-export default function CustomizationPage() {
+const OptionManager = ({ type, label }: { type: string; label: string }) => {
   const { colors } = useThemeStore();
-  const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [isOptionsModalVisible, setIsOptionsModalVisible] = useState(false);
-  const [currentOptionType, setCurrentOptionType] = useState<OptionType>('lead_source');
   const [options, setOptions] = useState<AppOption[]>([]);
-  const [newOptionLabel, setNewOptionLabel] = useState('');
+  const [modalVisible, setModalVisible] = useState(false);
   const [editingOption, setEditingOption] = useState<AppOption | null>(null);
+  const [newOptionLabel, setNewOptionLabel] = useState('');
 
-  const loadOptions = useCallback(async (type: OptionType) => {
-    setLoading(true);
+  const loadOptions = useCallback(async () => {
     try {
       const db = getDatabase();
-      const result = await db.getAllAsync(
-        "SELECT * FROM app_options WHERE type = ? ORDER BY label ASC",
-        [type]
-      );
+      const result = await db.getAllAsync('SELECT * FROM app_options WHERE type = ? ORDER BY label ASC', [type]);
       setOptions(result as AppOption[]);
     } catch (error) {
-      console.error('Error loading options:', error);
-      Alert.alert('Error', 'Could not load options. Please try again.');
-    } finally {
-      setLoading(false);
+      console.error(`Error loading options for type ${type}:`, error);
     }
-  }, []);
+  }, [type]);
 
-  const openOptionsManager = (type: OptionType) => {
-    setCurrentOptionType(type);
-    loadOptions(type);
-    setIsOptionsModalVisible(true);
-  };
+  useEffect(() => {
+    loadOptions();
+  }, [loadOptions]);
 
-  const handleAddOption = async () => {
-    if (!newOptionLabel.trim()) return;
+  const handleSave = async () => {
+    if (!newOptionLabel.trim()) {
+      Alert.alert('Error', 'Option label cannot be empty.');
+      return;
+    }
     try {
       const db = getDatabase();
       if (editingOption) {
-        await db.runAsync(
-          'UPDATE app_options SET label = ? WHERE id = ?',
-          [newOptionLabel.trim(), editingOption.id]
-        );
-        setEditingOption(null);
+        await db.runAsync('UPDATE app_options SET label = ? WHERE id = ?', [newOptionLabel, editingOption.id]);
       } else {
-        await db.runAsync(
-          "INSERT INTO app_options (type, label) VALUES (?, ?)",
-          [currentOptionType, newOptionLabel.trim()]
-        );
+        await db.runAsync('INSERT INTO app_options (type, label) VALUES (?, ?)', [type, newOptionLabel]);
       }
+      setModalVisible(false);
+      setEditingOption(null);
       setNewOptionLabel('');
-      loadOptions(currentOptionType);
+      loadOptions();
     } catch (error) {
       console.error('Error saving option:', error);
       Alert.alert('Error', 'Failed to save option.');
     }
   };
 
-  const handleDeleteOption = (id: number) => {
-    Alert.alert(
-      'Delete Option',
-      `Are you sure you want to delete this ${currentOptionType.replace('_', ' ')}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const db = getDatabase();
-              await db.runAsync('DELETE FROM app_options WHERE id = ?', [id]);
-              loadOptions(currentOptionType);
-            } catch (error) {
-              console.error('Error deleting option:', error);
-            }
-          },
+  const handleDelete = (id: number) => {
+    Alert.alert('Delete Option', 'Are you sure you want to delete this option?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const db = getDatabase();
+            await db.runAsync('DELETE FROM app_options WHERE id = ?', [id]);
+            loadOptions();
+          } catch (error) {
+            console.error('Error deleting option:', error);
+            Alert.alert('Error', 'Failed to delete option.');
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
-  const CustomizationItem = ({ icon, title, subtitle, onPress }: any) => (
-    <TouchableOpacity
-      style={[styles.item, { backgroundColor: colors.surface, borderColor: colors.border }]}
-      onPress={onPress}
-    >
-      <View style={[styles.iconBox, { backgroundColor: colors.primary + '15' }]}>
-        <Ionicons name={icon} size={24} color={colors.primary} />
-      </View>
-      <View style={styles.itemContent}>
-        <Text style={[styles.itemTitle, { color: colors.text }]}>{title}</Text>
-        <Text style={[styles.itemSubtitle, { color: colors.textSecondary }]}>{subtitle}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
-    </TouchableOpacity>
-  );
+  const openModal = (option: AppOption | null = null) => {
+    setEditingOption(option);
+    setNewOptionLabel(option ? option.label : '');
+    setModalVisible(true);
+  };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.header}>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>Customization</Text>
-          <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-            Configure the options and categories used throughout the app.
-          </Text>
-        </View>
+    <View style={[styles.optionManagerContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <Text style={[styles.optionManagerLabel, { color: colors.text }]}>{label}</Text>
+      <FlatList
+        data={options}
+        keyExtractor={(item) => item.id.toString()}
+        renderItem={({ item }) => (
+          <View style={[styles.optionItem, { borderBottomColor: colors.border }]}>
+            <Text style={{ color: colors.textSecondary }}>{item.label}</Text>
+            <View style={styles.optionActions}>
+              <TouchableOpacity onPress={() => openModal(item)}>
+                <Ionicons name="create-outline" size={20} color={colors.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => handleDelete(item.id)}>
+                <Ionicons name="trash-outline" size={20} color={colors.error} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+        ListEmptyComponent={<Text style={{ color: colors.textSecondary, textAlign: 'center', padding: 10 }}>No options yet.</Text>}
+      />
+      <TouchableOpacity style={[styles.addButton, { backgroundColor: colors.primary }]} onPress={() => openModal()}>
+        <Ionicons name="add" size={20} color="#fff" />
+        <Text style={styles.addButtonText}>Add New</Text>
+      </TouchableOpacity>
 
-        <View style={styles.grid}>
-          <CustomizationItem
-            icon="funnel-outline"
-            title="Lead Sources"
-            subtitle="Instagram, Facebook, Referrals, Ads..."
-            onPress={() => openOptionsManager('lead_source')}
-          />
-          <CustomizationItem
-            icon="camera-outline"
-            title="Event Types"
-            subtitle="Wedding, Pre-wedding, Maternity, Corporate..."
-            onPress={() => openOptionsManager('event_type')}
-          />
-          <CustomizationItem
-            icon="card-outline"
-            title="Payment Methods"
-            subtitle="Cash, UPI, Bank Transfer, Cheque..."
-            onPress={() => openOptionsManager('payment_method')}
-          />
-          <CustomizationItem
-            icon="images-outline"
-            title="Shoot Categories"
-            subtitle="Cinematic, Traditional, Candid, Drone..."
-            onPress={() => openOptionsManager('shoot_category')}
-          />
-        </View>
-
-        <View style={styles.infoBox}>
-          <Ionicons name="information-circle-outline" size={20} color={colors.primary} />
-          <Text style={[styles.infoText, { color: colors.textSecondary }]}>
-            Changes made here will reflect in the selection dropdowns when creating new leads, events, or recording payments.
-          </Text>
-        </View>
-      </ScrollView>
-
-      {/* Options Management Modal */}
-      <Modal
-        visible={isOptionsModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setIsOptionsModalVisible(false)}
-      >
+      <Modal visible={modalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>
-                Manage {currentOptionType.replace('_', ' ')}
-              </Text>
-              <TouchableOpacity onPress={() => setIsOptionsModalVisible(false)}>
-                <Ionicons name="close" size={28} color={colors.textSecondary} />
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{editingOption ? 'Edit' : 'Add'} {label}</Text>
+            <TextInput
+              style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
+              value={newOptionLabel}
+              onChangeText={setNewOptionLabel}
+              placeholder={`Enter ${label}`}
+              placeholderTextColor={colors.textTertiary}
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalButton} onPress={() => setModalVisible(false)}>
+                <Text style={{ color: colors.textSecondary }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalButton, { backgroundColor: colors.primary }]} onPress={handleSave}>
+                <Text style={{ color: '#fff' }}>Save</Text>
               </TouchableOpacity>
             </View>
-
-            <View style={styles.addOptionContainer}>
-              <TextInput
-                style={[styles.input, { backgroundColor: colors.background, color: colors.text, borderColor: colors.border }]}
-                value={newOptionLabel}
-                onChangeText={setNewOptionLabel}
-                placeholder={editingOption ? "Edit item..." : "Add new item..."}
-                placeholderTextColor={colors.textTertiary}
-                autoFocus={false}
-              />
-              <TouchableOpacity
-                style={[styles.addButton, { backgroundColor: colors.primary }]}
-                onPress={handleAddOption}
-              >
-                <Ionicons name={editingOption ? "checkmark" : "add"} size={24} color="#fff" />
-              </TouchableOpacity>
-              {editingOption && (
-                <TouchableOpacity
-                  style={[styles.cancelEditButton, { backgroundColor: colors.background, borderColor: colors.border }]}
-                  onPress={() => {
-                    setEditingOption(null);
-                    setNewOptionLabel('');
-                  }}
-                >
-                  <Ionicons name="close" size={24} color={colors.text} />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            {loading ? (
-              <View style={styles.modalLoading}>
-                <ActivityIndicator color={colors.primary} />
-              </View>
-            ) : (
-              <FlatList
-                data={options}
-                keyExtractor={(item) => item.id.toString()}
-                contentContainerStyle={styles.optionsList}
-                renderItem={({ item }) => (
-                  <View style={[styles.optionItem, { borderBottomColor: colors.border }]}>
-                    <Text style={[styles.optionLabel, { color: colors.text }]}>{item.label}</Text>
-                    <View style={styles.optionActions}>
-                      <TouchableOpacity
-                        onPress={() => {
-                          setEditingOption(item);
-                          setNewOptionLabel(item.label);
-                        }}
-                        style={styles.actionIcon}
-                      >
-                        <Ionicons name="pencil-outline" size={20} color={colors.primary} />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => handleDeleteOption(item.id)}
-                        style={styles.actionIcon}
-                      >
-                        <Ionicons name="trash-outline" size={20} color={colors.error} />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              />
-            )}
           </View>
         </View>
       </Modal>
     </View>
+  );
+};
+
+const CustomizationSection = ({ title, options }: { title: string; options: { label: string; type: string }[] }) => {
+  const { colors } = useThemeStore();
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <View style={[styles.sectionContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <TouchableOpacity style={styles.sectionHeader} onPress={() => setExpanded(!expanded)}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>{title}</Text>
+        <Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={24} color={colors.textSecondary} />
+      </TouchableOpacity>
+      {expanded && (
+        <View style={styles.optionsContainer}>
+          {options.map((option) => (
+            <OptionManager key={option.type} type={option.type} label={option.label} />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+};
+
+export default function CustomizationPage() {
+  const { colors } = useThemeStore();
+
+  const renderItem = ({ item }: { item: any }) => (
+    <CustomizationSection title={item.title} options={item.options} />
+  );
+
+  return (
+    <FlatList
+      data={customizationSections}
+      renderItem={renderItem}
+      keyExtractor={(item) => item.title}
+      style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={{ paddingBottom: 30 }}
+    />
   );
 }
 
@@ -256,146 +223,94 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  scrollContent: {
-    padding: 20,
-  },
-  header: {
-    marginBottom: 24,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  headerSubtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  grid: {
-    gap: 12,
-  },
-  item: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 16,
+  sectionContainer: {
+    marginHorizontal: 16,
+    marginVertical: 8,
+    borderRadius: 12,
     borderWidth: 1,
+    overflow: 'hidden',
   },
-  iconBox: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
-  itemContent: {
-    flex: 1,
-  },
-  itemTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  itemSubtitle: {
-    fontSize: 13,
-  },
-  infoBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 32,
-    padding: 16,
-    backgroundColor: 'rgba(0,0,0,0.03)',
-    borderRadius: 12,
-    gap: 12,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18,
-    fontStyle: 'italic',
-  },
-  // Modal styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
-    height: '80%',
-    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
-  },
-  modalHeader: {
+  sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 24,
-    borderBottomWidth: 1,
+    padding: 16,
   },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    textTransform: 'capitalize',
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
   },
-  addOptionContainer: {
-    flexDirection: 'row',
-    padding: 20,
-    gap: 10,
+  optionsContainer: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderColor: '#eee',
   },
-  input: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 14,
+  optionManagerContainer: {
+    marginBottom: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 12,
+  },
+  optionManagerLabel: {
     fontSize: 16,
-    borderWidth: 1,
-  },
-  addButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  cancelEditButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-  },
-  modalLoading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  optionsList: {
-    paddingHorizontal: 24,
-    paddingBottom: 20,
+    fontWeight: '600',
+    marginBottom: 8,
   },
   optionItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 18,
+    paddingVertical: 10,
     borderBottomWidth: 1,
-  },
-  optionLabel: {
-    fontSize: 16,
-    fontWeight: '500',
   },
   optionActions: {
     flexDirection: 'row',
-    gap: 18,
+    gap: 16,
   },
-  actionIcon: {
-    padding: 4,
+  addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 10,
+    gap: 8,
+  },
+  addButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '80%',
+    borderRadius: 12,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 16,
+  },
+  input: {
+    height: 40,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    marginBottom: 16,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  modalButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
   },
 });

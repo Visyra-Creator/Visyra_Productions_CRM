@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable, Platform, ActivityIndicator, useWindowDimensions, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,45 +9,13 @@ import { useMenuStore } from '../src/store/menuStore';
 import WebNotice from './web-notice';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-export default function RootLayout() {
+function RootLayoutNav() {
   const { colors } = useThemeStore();
   const { isMenuOpen, closeMenu, toggleMenu } = useMenuStore();
-  const [dbInitialized, setDbInitialized] = useState(false);
-  const [showSplash, setShowSplash] = useState(true);
-  const fadeAnim = useState(new Animated.Value(1))[0];
   const router = useRouter();
   const segments = useSegments();
   const { width } = useWindowDimensions();
   const isTablet = width > 768;
-
-  useEffect(() => {
-    async function setup() {
-      if (Platform.OS !== 'web') {
-        try {
-          await initDatabase();
-          setDbInitialized(true);
-        } catch (error) {
-          console.error("Failed to initialize database:", error);
-        }
-      } else {
-        setDbInitialized(true);
-      }
-
-      // Keep splash visible for at least 2 seconds
-      setTimeout(() => {
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 800,
-          useNativeDriver: true,
-        }).start(() => setShowSplash(false));
-      }, 2000);
-    }
-    setup();
-  }, []);
-
-  if (Platform.OS === 'web') {
-    return <WebNotice />;
-  }
 
   const menuItems = [
     { icon: 'grid-outline', title: 'Dashboard', route: '/' },
@@ -213,23 +181,80 @@ export default function RootLayout() {
           <Stack.Screen name="customization" options={{ title: 'Customization' }} />
         </Stack>
         <SideMenu />
-
-        {showSplash && (
-          <Animated.View style={[styles.splashOverlay, { backgroundColor: '#0a0a0f', opacity: fadeAnim }]}>
-            <View style={styles.splashContent}>
-              <Text style={styles.splashLogo}>V</Text>
-              <Text style={styles.splashBrand}>VISYRA</Text>
-              {!dbInitialized && (
-                <View style={styles.loaderContainer}>
-                  <ActivityIndicator size="small" color="#fff" />
-                  <Text style={styles.loaderText}>Syncing Engine...</Text>
-                </View>
-              )}
-            </View>
-          </Animated.View>
-        )}
       </View>
     </SafeAreaProvider>
+  );
+}
+
+function useProtectedRoute() {
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    // Navigation logic can be added here if needed
+  }, [segments, router]);
+}
+
+export default function RootLayout() {
+  const [dbInitialized, setDbInitialized] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
+  const fadeAnim = useState(new Animated.Value(1))[0];
+
+  useEffect(() => {
+    async function setup() {
+      if (Platform.OS !== 'web') {
+        try {
+          await initDatabase();
+          setDbInitialized(true);
+        } catch (error) {
+          console.error("Failed to initialize database:", error);
+        }
+      } else {
+        setDbInitialized(true);
+      }
+
+      setTimeout(() => {
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 800,
+          useNativeDriver: true,
+        }).start(() => setShowSplash(false));
+      }, 2000);
+    }
+    setup();
+  }, []);
+
+  if (Platform.OS === 'web') {
+    return <WebNotice />;
+  }
+
+  if (!dbInitialized) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" />
+        <Text>Loading...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <RootLayoutNav />
+      {showSplash && (
+        <Animated.View style={[styles.splashOverlay, { backgroundColor: '#0a0a0f', opacity: fadeAnim }]}>
+          <View style={styles.splashContent}>
+            <Text style={styles.splashLogo}>V</Text>
+            <Text style={styles.splashBrand}>VISYRA</Text>
+            {!dbInitialized && (
+              <View style={styles.loaderContainer}>
+                <ActivityIndicator size="small" color="#fff" />
+                <Text style={styles.loaderText}>Syncing Engine...</Text>
+              </View>
+            )}
+          </View>
+        </Animated.View>
+      )}
+    </>
   );
 }
 

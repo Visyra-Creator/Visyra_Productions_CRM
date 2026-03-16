@@ -199,7 +199,27 @@ export const initDatabase = async () => {
           image_path TEXT,
           FOREIGN KEY (location_id) REFERENCES locations (id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT UNIQUE NOT NULL,
+          password TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'user',
+          first_name TEXT,
+          last_name TEXT,
+          employee_id TEXT UNIQUE,
+          gmail TEXT,
+          phone_number TEXT,
+          photo TEXT
+        );
       `);
+
+      // Seed a default admin user if no users exist
+      const users = await db.getAllAsync('SELECT * FROM users');
+      if (users.length === 0) {
+        // In a real app, use a secure hashing library like bcrypt
+        await db.runAsync("INSERT INTO users (username, password, role, first_name) VALUES (?, ?, ?, ?)", ['admin', 'admin', 'admin', 'Admin']);
+      }
 
       const ensureFormattedIdColumn = async (tableName: string, columnName: string, prefix: string) => {
         try {

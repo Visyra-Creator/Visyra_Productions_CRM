@@ -37,10 +37,12 @@ interface Shoot {
 
 interface AppOption {
   id: number;
+  type: string;
   label: string;
+  value: string;
 }
 
-const STATUS_OPTIONS = [
+const SHOOT_STATUSES_DEFAULTS = [
   { label: 'Scheduled', value: 'upcoming' },
   { label: 'Shoot Completed', value: 'completed' }
 ];
@@ -52,6 +54,7 @@ export default function Shoots() {
   const [shoots, setShoots] = useState<Shoot[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [eventTypes, setEventTypes] = useState<AppOption[]>([]);
+  const [shootStatuses, setShootStatuses] = useState<AppOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingShoot, setEditingShoot] = useState<Shoot | null>(null);
@@ -88,7 +91,19 @@ export default function Shoots() {
     setLoading(true);
     try {
       const db = getDatabase();
-      const [shootResult, clientResult, typesResult] = await Promise.all([
+
+      // Seed default shoot statuses if they don't exist
+      const existingStatuses = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'shoot_status'");
+      if (existingStatuses.length === 0) {
+        for (const status of SHOOT_STATUSES_DEFAULTS) {
+          await db.runAsync(
+            "INSERT INTO app_options (type, label, value) VALUES (?, ?, ?)",
+            ['shoot_status', status.label, status.value]
+          );
+        }
+      }
+
+      const [shootResult, clientResult, typesResult, statusResult] = await Promise.all([
         db.getAllAsync(
           `SELECT shoots.*, clients.name as client_name
            FROM shoots
@@ -96,11 +111,13 @@ export default function Shoots() {
            ORDER BY shoots.shoot_date ASC`
         ),
         db.getAllAsync('SELECT id, name FROM clients ORDER BY name'),
-        db.getAllAsync("SELECT id, label FROM app_options WHERE type = 'event_type' ORDER BY label ASC")
+        db.getAllAsync("SELECT * FROM app_options WHERE type = 'event_type' ORDER BY label ASC"),
+        db.getAllAsync("SELECT * FROM app_options WHERE type = 'shoot_status' ORDER BY id ASC")
       ]);
       setShoots(shootResult as Shoot[]);
       setClients(clientResult);
       setEventTypes(typesResult as AppOption[]);
+      setShootStatuses(statusResult as AppOption[]);
     } catch (error) {
       console.error('Error loading shoots data:', error);
     } finally {
@@ -780,7 +797,7 @@ export default function Shoots() {
         <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setStatusPickerVisible(false)}>
           <View style={[styles.pickerContent, { backgroundColor: colors.surface, paddingBottom: 20 }]}>
             <Text style={[styles.pickerTitle, { color: colors.text, padding: 20, textAlign: 'center' }]}>Update Status</Text>
-            {STATUS_OPTIONS.map((option) => (
+            {shootStatuses.map((option) => (
               <TouchableOpacity
                 key={option.value}
                 style={[styles.pickerItem, { borderBottomColor: colors.border, paddingVertical: 18 }]}

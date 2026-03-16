@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -54,6 +54,16 @@ const LOCATION_TYPES = [
 
 type SortOption = 'none' | 'name_asc' | 'price_asc' | 'price_desc' | 'usage_desc';
 
+interface LocationFilter {
+  type: string;
+  city: string;
+  is_paid: string;
+  minPrice: string;
+  maxPrice: string;
+  venue_name: string;
+  landmark: string;
+}
+
 export default function LocationGalleryPage() {
   const { colors } = useThemeStore();
   const [locations, setLocations] = useState<Location[]>([]);
@@ -65,6 +75,16 @@ export default function LocationGalleryPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('None');
   const [sortBy, setSortBy] = useState<SortOption>('none');
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
+  const [filters, setFilters] = useState<LocationFilter>({
+    type: 'all',
+    city: '',
+    is_paid: 'all',
+    minPrice: '',
+    maxPrice: '',
+    venue_name: '',
+    landmark: ''
+  });
 
   const [formData, setFormData] = useState({
     name: '',
@@ -108,13 +128,31 @@ export default function LocationGalleryPage() {
 
   const processedLocations = useMemo(() => {
     let result = locations.filter(l => {
+      // Basic search filter
       const matchesSearch = l.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                           l.city.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesFilter = filterType === 'None' || filterType === 'All' ||
+                           l.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                           l.venue_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                           l.landmark?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      // Simple filter (top row chips)
+      const matchesSimpleFilter = filterType === 'None' || filterType === 'All' ||
                            (filterType === 'Paid' && l.is_paid === 1) ||
                            (filterType === 'Free' && l.is_paid === 0) ||
                            l.type === filterType;
-      return matchesSearch && matchesFilter;
+
+      // Advanced filters
+      const matchesType = filters.type === 'all' || l.type === filters.type;
+      const matchesCity = !filters.city || l.city.toLowerCase().includes(filters.city.toLowerCase());
+      const matchesPaid = filters.is_paid === 'all' || 
+                         (filters.is_paid === 'paid' && l.is_paid === 1) ||
+                         (filters.is_paid === 'free' && l.is_paid === 0);
+      const matchesMinPrice = !filters.minPrice || l.price >= parseFloat(filters.minPrice);
+      const matchesMaxPrice = !filters.maxPrice || l.price <= parseFloat(filters.maxPrice);
+      const matchesVenue = !filters.venue_name || l.venue_name?.toLowerCase().includes(filters.venue_name.toLowerCase());
+      const matchesLandmark = !filters.landmark || l.landmark?.toLowerCase().includes(filters.landmark.toLowerCase());
+
+      return matchesSearch && matchesSimpleFilter && matchesType && matchesCity && 
+             matchesPaid && matchesMinPrice && matchesMaxPrice && matchesVenue && matchesLandmark;
     });
 
     if (sortBy !== 'none') {
@@ -130,10 +168,27 @@ export default function LocationGalleryPage() {
     }
 
     return result;
-  }, [locations, searchQuery, filterType, sortBy]);
+  }, [locations, searchQuery, filterType, sortBy, filters]);
 
   const handleSave = async () => {
-    if (!formData.name) return Alert.alert('Error', 'Location Name is required.');
+    // Validation rules
+    if (!formData.name || formData.name.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter a Location Name.');
+      return;
+    }
+    if (!formData.city || formData.city.trim() === '') {
+      Alert.alert('Validation Error', 'Please enter a City.');
+      return;
+    }
+    if (formData.is_paid && (!formData.price || isNaN(parseFloat(formData.price)) || parseFloat(formData.price) <= 0)) {
+      Alert.alert('Validation Error', 'Please enter a valid price for a paid location.');
+      return;
+    }
+    if (formData.google_maps_url && !/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i.test(formData.google_maps_url)) {
+      Alert.alert('Validation Error', 'Please enter a valid Google Maps URL.');
+      return;
+    }
+
     const db = getDatabase();
     try {
       if (editingLocation) {
@@ -224,21 +279,32 @@ export default function LocationGalleryPage() {
   const numColumns = isTablet ? 3 : 1;
   const cardWidth = isTablet ? (width - 60) / 3 : (width - 40);
 
-  const StatCard = ({ title, value, icon, color }: any) => (
-    <View style={[styles.statCard, { backgroundColor: colors.surface, shadowColor: color, flex: 1 }]}>
-      <View style={[styles.statIcon, { backgroundColor: color + '15' }]}><Ionicons name={icon} size={14} color={color} /></View>
-      <Text style={[styles.statValue, { color: colors.text }]} numberOfLines={1}>{value}</Text>
-      <Text style={[styles.statTitle, { color: colors.textSecondary }]} numberOfLines={1}>{title}</Text>
-    </View>
+  const StatCard = ({ title, value, icon, gradient }: any) => (
+    <LinearGradient
+      colors={gradient}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={[styles.statCard, { flex: 1 }]}
+    >
+      <View style={styles.summaryContent}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.summaryCount}>{value}</Text>
+          <Text style={styles.summaryTitle} numberOfLines={1}>{title}</Text>
+        </View>
+        <View style={styles.summaryIconContainer}>
+          <Ionicons name={icon} size={24} color="#fff" />
+        </View>
+      </View>
+    </LinearGradient>
   );
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.statsContainer}>
-        <StatCard title="Total" value={stats.total} color={colors.primary} icon="location-outline" />
-        <StatCard title="Paid" value={stats.paid} color={colors.error} icon="card-outline" />
-        <StatCard title="Free" value={stats.free} color={colors.success} icon="gift-outline" />
-        <StatCard title="Most Used" value={stats.mostUsed} color={colors.info} icon="trending-up-outline" />
+        <StatCard title="Total Locations" value={stats.total} gradient={['#4c669f', '#3b5998', '#192f6a']} icon="location-outline" />
+        <StatCard title="Paid Locations" value={stats.paid} gradient={['#D32F2F', '#C62828', '#B71C1C']} icon="card-outline" />
+        <StatCard title="Free Locations" value={stats.free} gradient={['#388E3C', '#2E7D32', '#1B5E20']} icon="gift-outline" />
+        <StatCard title="Most Used" value={stats.mostUsed} gradient={['#0288D1', '#0277BD', '#01579B']} icon="trending-up-outline" />
       </View>
 
       <View style={styles.filtersSection}>
@@ -257,13 +323,20 @@ export default function LocationGalleryPage() {
             style={[styles.iconBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
             onPress={() => setSortModalVisible(true)}
           >
-            <Ionicons name="filter" size={20} color={sortBy === 'none' ? colors.textTertiary : colors.primary} />
+            <Ionicons name="swap-vertical" size={20} color={sortBy !== 'none' ? colors.primary : colors.textTertiary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.iconBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={() => setIsFilterModalVisible(true)}
+          >
+            <Ionicons name="funnel-outline" size={20} color={Object.values(filters).some(v => v !== 'all' && v !== '') ? colors.primary : colors.textTertiary} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.addBtn, { backgroundColor: colors.primary }]}
             onPress={() => openEditModal()}
           >
-            <Ionicons name="add" size={24} color="#fff" />
+            <Ionicons name="add" size={16} color="#fff" />
+            <Text style={styles.addBtnText}>Add New Location</Text>
           </TouchableOpacity>
         </View>
 
@@ -442,6 +515,100 @@ export default function LocationGalleryPage() {
         </View>
       </Modal>
 
+      {/* Filter Modal */}
+      <Modal visible={isFilterModalVisible} transparent={true} animationType="fade" onRequestClose={() => setIsFilterModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity activeOpacity={1} style={{ flex: 1, width: '100%' }} onPress={() => setIsFilterModalVisible(false)} />
+          <View style={{ backgroundColor: colors.surface, width: '90%', borderRadius: 24, overflow: 'hidden', maxHeight: '80%', minHeight: '50%', alignSelf: 'center' }}>
+            <View style={[styles.modalHeader, { borderBottomWidth: 1, borderBottomColor: colors.border }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>Filter Locations</Text>
+              <TouchableOpacity onPress={() => {
+                setFilters({
+                  type: 'all',
+                  city: '',
+                  is_paid: 'all',
+                  minPrice: '',
+                  maxPrice: '',
+                  venue_name: '',
+                  landmark: ''
+                });
+                setFilterType('None');
+              }}>
+                <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 14 }}>Clear All</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView nestedScrollEnabled={true} style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={true}>
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginBottom: 10 }]}>Location Type</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.type === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, type: 'all' })}>
+                  <Text style={{ color: filters.type === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
+                </TouchableOpacity>
+                {LOCATION_TYPES.map(type => (
+                  <TouchableOpacity key={type} style={[styles.filterChip, { backgroundColor: filters.type === type ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, type })}>
+                    <Text style={{ color: filters.type === type ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>{type}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Payment Status</Text>
+              <View style={styles.filterSourceGrid}>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.is_paid === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, is_paid: 'all' })}>
+                  <Text style={{ color: filters.is_paid === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.is_paid === 'paid' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, is_paid: 'paid' })}>
+                  <Text style={{ color: filters.is_paid === 'paid' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>Paid</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.is_paid === 'free' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, is_paid: 'free' })}>
+                  <Text style={{ color: filters.is_paid === 'free' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>Free</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>City</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8, marginBottom: 16 }]}
+                value={filters.city}
+                onChangeText={(text) => setFilters({ ...filters, city: text })}
+                placeholder="Search city..."
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Venue Name</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8, marginBottom: 16 }]}
+                value={filters.venue_name}
+                onChangeText={(text) => setFilters({ ...filters, venue_name: text })}
+                placeholder="Search venue name..."
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Landmark</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8, marginBottom: 16 }]}
+                value={filters.landmark}
+                onChangeText={(text) => setFilters({ ...filters, landmark: text })}
+                placeholder="Search landmark..."
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Price Range (₹)</Text>
+              <View style={styles.rangeRow}>
+                <TextInput style={[styles.input, { flex: 1, backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8 }]} value={filters.minPrice} onChangeText={(text) => setFilters({ ...filters, minPrice: text })} placeholder="Min" keyboardType="numeric" placeholderTextColor={colors.textTertiary} />
+                <Text style={{ color: colors.textSecondary, paddingHorizontal: 8, fontSize: 12 }}>to</Text>
+                <TextInput style={[styles.input, { flex: 1, backgroundColor: colors.background, color: colors.text, padding: 10, borderRadius: 8 }]} value={filters.maxPrice} onChangeText={(text) => setFilters({ ...filters, maxPrice: text })} placeholder="Max" keyboardType="numeric" placeholderTextColor={colors.textTertiary} />
+              </View>
+
+              <TouchableOpacity style={[styles.submitButton, { backgroundColor: colors.primary }]} onPress={() => {
+                setIsFilterModalVisible(false);
+              }}>
+                <Text style={styles.submitButtonText}>Apply Filters</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+          <TouchableOpacity activeOpacity={1} style={{ flex: 1, width: '100%' }} onPress={() => setIsFilterModalVisible(false)} />
+        </View>
+      </Modal>
+
       {/* Edit Modal */}
       <Modal visible={editModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
@@ -584,18 +751,55 @@ export default function LocationGalleryPage() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  statsContainer: { paddingTop: 20, paddingHorizontal: 10, flexDirection: 'row', gap: 6, paddingBottom: 10 },
-  statCard: { paddingVertical: 15, paddingHorizontal: 8, borderRadius: 12, marginBottom: 10, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, borderWidth: 1, alignItems: 'center', minHeight: 110, justifyContent: 'center' },
-  statIcon: { width: 24, height: 24, borderRadius: 6, justifyContent: 'center', alignItems: 'center', marginBottom: 4 },
-  statValue: { fontWeight: '800', marginBottom: 2, fontSize: 11 },
-  statTitle: { fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.2, fontSize: 7 },
-
+  statsContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 10,
+    paddingTop: 15,
+    paddingBottom: 10,
+    gap: 10,
+  },
+  statCard: {
+    borderRadius: 15,
+    height: 100,
+    justifyContent: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+  },
+  summaryContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    justifyContent: 'space-between',
+  },
+  summaryCount: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  summaryTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    opacity: 0.9,
+  },
+  summaryIconContainer: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   filtersSection: { paddingHorizontal: 20, marginBottom: 10 },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
   searchBox: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, height: 48 },
   searchInput: { flex: 1, height: 48, marginLeft: 8, fontSize: 14 },
   iconBtn: { width: 48, height: 48, borderRadius: 12, borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
-  addBtn: { width: 48, height: 48, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  addBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 48, borderRadius: 12, paddingHorizontal: 16, gap: 8 },
+  addBtnText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
 
   chipScroll: { paddingBottom: 10 },
   filterChip: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, marginRight: 8, backgroundColor: 'rgba(255,255,255,0.05)' },
@@ -673,5 +877,12 @@ const styles = StyleSheet.create({
   removeImageBtn: { position: 'absolute', top: -5, right: -5 },
   submitBtn: { padding: 18, borderRadius: 18, alignItems: 'center', marginTop: 30, marginBottom: 20 },
   submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  inputGroup: { marginTop: 0 }
+  inputGroup: { marginTop: 0 },
+
+  // Filter modal styles
+  filterSectionTitle: { fontSize: 14, fontWeight: '700', marginBottom: 12 },
+  filterSourceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16, alignItems: 'center' },
+  rangeRow: { flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 16 },
+  submitButton: { padding: 18, borderRadius: 18, alignItems: 'center', marginTop: 30, marginBottom: 20 },
+  submitButtonText: { color: '#fff', fontSize: 16, fontWeight: '800' },
 });

@@ -90,6 +90,20 @@ export default function Settings() {
         </View>
 
         <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Account</Text>
+          <SettingItem
+            icon="log-out-outline"
+            title="Logout"
+            onPress={() => {
+              // Logout logic to be implemented
+            }}
+            rightElement={
+              <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+            }
+          />
+        </View>
+
+        <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>About</Text>
           <SettingItem
             icon="information-circle-outline"

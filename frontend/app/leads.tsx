@@ -48,7 +48,15 @@ interface Lead {
   created_at?: string;
 }
 
-const LEAD_STAGES = [
+interface AppOption {
+  id: number;
+  type: string;
+  label: string;
+  value: string;
+  color: string;
+}
+
+const LEAD_STAGES_DEFAULTS = [
   { label: 'New', value: 'new', color: '#3b82f6' },
   { label: 'Contacted', value: 'contacted', color: '#8b5cf6' },
   { label: 'Qualified', value: 'qualified', color: '#10b981' },
@@ -61,7 +69,11 @@ interface AppOption {
   id: number;
   type: string;
   label: string;
+  value: string;
+  color: string;
 }
+
+const LEAD_STAGES = LEAD_STAGES_DEFAULTS;
 
 type SortKey = 'date_desc' | 'date_asc' | 'name_asc' | 'name_desc' | 'id_desc' | 'id_asc';
 
@@ -91,6 +103,7 @@ export default function Leads() {
   // Data State
   const [leads, setLeads] = useState<Lead[]>([]);
   const [leadSources, setLeadSources] = useState<AppOption[]>([]);
+  const [leadStages, setLeadStages] = useState<AppOption[]>([]);
   const [eventTypes, setEventTypes] = useState<AppOption[]>([]);
   const [stats, setStats] = useState({
     today: 0, 
@@ -203,12 +216,26 @@ export default function Leads() {
       setDbReady(true);
       setLoading(true);
 
+      // Seed default lead stages if they don't exist
+      const existingStages = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_stage'");
+      if (existingStages.length === 0) {
+        for (const stage of LEAD_STAGES_DEFAULTS) {
+          await db.runAsync(
+            "INSERT INTO app_options (type, label, value, color) VALUES (?, ?, ?, ?)",
+            ['lead_stage', stage.label, stage.value, stage.color]
+          );
+        }
+      }
+
       const result = await db.getAllAsync('SELECT * FROM leads ORDER BY id DESC');
       const allLeads = result as Lead[];
       setLeads(allLeads);
 
       const sources = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_source' ORDER BY label ASC");
       setLeadSources(sources as AppOption[]);
+
+      const stages = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'lead_stage' ORDER BY id ASC");
+      setLeadStages(stages as AppOption[]);
 
       const types = await db.getAllAsync("SELECT * FROM app_options WHERE type = 'event_type' ORDER BY label ASC");
       setEventTypes(types as AppOption[]);
@@ -915,9 +942,9 @@ export default function Leads() {
       <Text style={[styles.colEmail, { color: colors.textSecondary }]} numberOfLines={1}>{lead.email || '-'}</Text>
       <Text style={[styles.colSource, { color: colors.textSecondary }]}>{lead.source || '-'}</Text>
       <View style={styles.colStage}>
-        <View style={[styles.stageBadge, { backgroundColor: LEAD_STAGES.find(s => s.value === lead.stage)?.color + '20' || colors.primary + '20' }]}>
-          <Text style={[styles.stageText, { color: LEAD_STAGES.find(s => s.value === lead.stage)?.color || colors.primary }]}>
-            {LEAD_STAGES.find(s => s.value === lead.stage)?.label || lead.stage || 'New'}
+        <View style={[styles.stageBadge, { backgroundColor: leadStages.find(s => s.value === lead.stage)?.color + '20' || colors.primary + '20' }]}>
+          <Text style={[styles.stageText, { color: leadStages.find(s => s.value === lead.stage)?.color || colors.primary }]}>
+            {leadStages.find(s => s.value === lead.stage)?.label || lead.stage || 'New'}
           </Text>
         </View>
       </View>
@@ -978,9 +1005,9 @@ export default function Leads() {
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsFilterModalVisible(true)}><Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? colors.primary : colors.textSecondary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsSortModalVisible(true)}><Ionicons name="swap-vertical" size={20} color={colors.primary} /></TouchableOpacity>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={handleImportExcel}><Ionicons name="document-text-outline" size={20} color={colors.info} /></TouchableOpacity>
-          <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]} onPress={() => {
+              <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]} onPress={() => {
                 setEditingLeadId(null);
-                setFormData({ lead_id: getNextLeadId(), name: '', company_name: '', phone: '', email: '', source: '', stage: 'new', event_date: format(new Date(), 'yyyy-MM-dd'), next_follow_up: '', notes: '' });
+                setFormData({ lead_id: getNextLeadId(), name: '', company_name: '', phone: '', email: '', source: '', event_type: '', event_location: '', package_name: '', total_price: '', status: 'new', stage: 'new', event_date: format(new Date(), 'yyyy-MM-dd'), next_follow_up: '', notes: '' });
                 setModalVisible(true);
               }}><Ionicons name="add" size={24} color="#fff" /><Text style={styles.addBtnText}>Add Lead</Text></TouchableOpacity>
         </View>
