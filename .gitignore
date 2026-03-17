@@ -50,4 +50,5 @@ ios/Pods
 # test cache
 jest-cache/
 
+
 .expo/
