@@ -15,6 +15,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeStore } from '../src/store/themeStore';
+import { useAuthStore } from '../src/store/authStore';
 import * as shootsService from '../src/api/services/shoots';
 import * as leadsService from '../src/api/services/leads';
 import * as clientsService from '../src/api/services/clients';
@@ -24,6 +25,7 @@ import * as expensesService from '../src/api/services/expenses';
 import * as portfolioService from '../src/api/services/portfolio';
 import { format } from 'date-fns';
 import { Image } from 'expo-image';
+import { supabase } from '../src/api/supabase';
 
 interface TimelineItem {
   id: string | number;
@@ -44,6 +46,7 @@ interface PortfolioImage {
 export default function Dashboard() {
   const router = useRouter();
   const { colors } = useThemeStore();
+  const { role } = useAuthStore();
   const { width: windowWidth } = useWindowDimensions();
   const isTablet = windowWidth > 768;
 
@@ -73,8 +76,19 @@ export default function Dashboard() {
   });
   const [timelineData, setTimelineData] = useState<TimelineItem[]>([]);
   const [recentPortfolio, setRecentPortfolio] = useState<PortfolioImage[]>([]);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
 
   const loadingRef = useRef(false);
+
+  const loadProfileAvatar = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getUser();
+      const avatar = (data?.user?.user_metadata?.avatar_url as string | undefined) || null;
+      setProfileAvatarUrl(avatar);
+    } catch (error) {
+      console.error('[Dashboard] Failed to load profile avatar:', error);
+    }
+  }, []);
 
   // Handle Exit Confirmation
   useFocusEffect(
@@ -90,6 +104,12 @@ export default function Dashboard() {
       const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       return () => subscription.remove();
     }, [])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProfileAvatar();
+    }, [loadProfileAvatar])
   );
 
   const loadData = async () => {
@@ -459,8 +479,15 @@ export default function Dashboard() {
                 {format(new Date(), 'EEEE, MMMM d, yyyy')}
               </Text>
             </View>
-            <TouchableOpacity style={[styles.profileButton, { backgroundColor: colors.surface }]}>
-              <Ionicons name="person" size={20} color={colors.primary} />
+            <TouchableOpacity
+              style={[styles.profileButton, { backgroundColor: colors.surface }]}
+              onPress={() => router.push('/profile')}
+            >
+              {profileAvatarUrl ? (
+                <Image source={{ uri: profileAvatarUrl }} style={styles.profileAvatarImage} contentFit="cover" />
+              ) : (
+                <Ionicons name="person" size={20} color={colors.primary} />
+              )}
             </TouchableOpacity>
           </View>
 
@@ -497,31 +524,37 @@ export default function Dashboard() {
                 gradientColors={['#6366f1', '#4f46e5']}
                 onPress={() => router.push('/clients')}
               />
-              <StatCard
-                icon="time"
-                title="Pending Payments"
-                value={stats.pendingPayments}
-                subtitle={`Bal: ₹${stats.outstandingBalance.toLocaleString()}`}
-                gradientColors={['#ef4444', '#dc2626']}
-                onPress={() => router.push('/payments')}
-              />
+              {role === 'admin' && (
+                <StatCard
+                  icon="time"
+                  title="Pending Payments"
+                  value={stats.pendingPayments}
+                  subtitle={`Bal: ₹${stats.outstandingBalance.toLocaleString()}`}
+                  gradientColors={['#ef4444', '#dc2626']}
+                  onPress={() => router.push('/payments')}
+                />
+              )}
             </View>
             <View style={[styles.statsGrid, { marginTop: 12 }]}>
-              <StatCard
-                icon="trending-up"
-                title="Monthly Revenue"
-                value={`₹${stats.monthlyRevenue.toLocaleString()}`}
-                subtitle={`Profit: ₹${stats.monthlyProfit.toLocaleString()}`}
-                gradientColors={['#10b981', '#059669']}
-                onPress={() => router.push('/payments')}
-              />
-              <StatCard
-                icon="receipt-outline"
-                title="Monthly Expenses"
-                value={`₹${stats.totalExpenses.toLocaleString()}`}
-                gradientColors={['#f59e0b', '#d97706']}
-                onPress={() => router.push('/expenses')}
-              />
+              {role === 'admin' && (
+                <StatCard
+                  icon="trending-up"
+                  title="Monthly Revenue"
+                  value={`₹${stats.monthlyRevenue.toLocaleString()}`}
+                  subtitle={`Profit: ₹${stats.monthlyProfit.toLocaleString()}`}
+                  gradientColors={['#10b981', '#059669']}
+                  onPress={() => router.push('/payments')}
+                />
+              )}
+              {role === 'admin' && (
+                <StatCard
+                  icon="receipt-outline"
+                  title="Monthly Expenses"
+                  value={`₹${stats.totalExpenses.toLocaleString()}`}
+                  gradientColors={['#f59e0b', '#d97706']}
+                  onPress={() => router.push('/expenses')}
+                />
+              )}
             </View>
           </View>
 
@@ -1035,12 +1068,29 @@ export default function Dashboard() {
 
           {/* Manage Section */}
           <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>Manage</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 12 }]}>Manage</Text>
             <View style={[styles.cardContainer, { backgroundColor: colors.surface, padding: 0 }]}>
               <ManageItem icon="people-outline" title="Clients" color={colors.primary} onPress={() => router.push('/clients')} />
               <ManageItem icon="camera-outline" title="Shoots" color={colors.accent} onPress={() => router.push('/shoots')} />
-              <ManageItem icon="card-outline" title="Payments" color={colors.error} onPress={() => router.push('/payments')} />
-              <ManageItem icon="gift-outline" title="Packages" color={colors.success} onPress={() => router.push('/packages')} isLast />
+              {role === 'admin' && (
+                <ManageItem icon="card-outline" title="Payments" color={colors.error} onPress={() => router.push('/payments')} />
+              )}
+              <ManageItem
+                icon="gift-outline"
+                title="Packages"
+                color={colors.success}
+                onPress={() => router.push('/packages')}
+                isLast={role !== 'admin'}
+              />
+              {role === 'admin' && (
+                <ManageItem
+                  icon="people"
+                  title="Manage Employees"
+                  color="#8b5cf6"
+                  onPress={() => router.push('/(admin)/employees')}
+                  isLast
+                />
+              )}
             </View>
           </View>
 
@@ -1151,6 +1201,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 2,
+  },
+  profileAvatarImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   section: {
     paddingHorizontal: 24,

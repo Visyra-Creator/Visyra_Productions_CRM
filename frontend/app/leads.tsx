@@ -461,43 +461,24 @@ export default function Leads() {
   };
 
   const handleConvertSingleLead = async (lead: Lead) => {
-    Alert.alert('Convert Lead', `Convert "${lead.name}" to client?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Convert', onPress: async () => {
-          try {
-            await clientsService.create({
-              name: lead.name,
-              phone: lead.phone,
-              email: lead.email,
-              event_type: lead.event_type || null,
-              event_date: lead.event_date || null,
-              event_location: lead.company_name || null,
-              lead_source: lead.source,
-              notes: lead.notes || null,
-              status: 'active',
-            });
-
-            // Fetch the newly created client to open edit form
-            const result = await clientsService.getAll() as any[];
-            const sorted = [...result].sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
-
-            if (sorted.length > 0) {
-              const newClient = sorted[0];
-              Alert.alert('Success', 'Lead converted to client successfully', [
-                { text: 'OK', onPress: () => {
-                  // Navigate to clients page with parameter to auto-edit the new client
-                  router.push({ pathname: 'clients', params: { autoEditClientId: newClient.id.toString() } });
-                }}
-              ]);
-            }
-            
-            loadData();
-          } catch (error) {
-            console.error('Failed to convert lead:', error);
-            Alert.alert('Error', 'Failed to convert lead to client');
-          }
-        }}
-    ]);
+    router.push({
+      pathname: '/clients',
+      params: {
+        fromLead: '1',
+        sourceLeadId: String(lead.id),
+        leadName: lead.name || '',
+        leadPhone: lead.phone || '',
+        leadEmail: lead.email || '',
+        leadCompanyName: lead.company_name || '',
+        leadEventType: lead.event_type || '',
+        leadEventDate: lead.event_date || '',
+        leadEventLocation: lead.event_location || '',
+        leadPackageName: lead.package_name || '',
+        leadTotalPrice: lead.total_price ? String(lead.total_price) : '',
+        leadSource: lead.source || '',
+        leadNotes: lead.notes || '',
+      },
+    });
   };
 
   const formatName = (text: string) => {

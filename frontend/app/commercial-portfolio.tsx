@@ -27,8 +27,10 @@ import axios from 'axios';
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = width > 768 ? 4 : 2;
 const ITEM_WIDTH = (width - (COLUMN_COUNT + 1) * 16) / COLUMN_COUNT;
-// Updated to use environment variable or your specific server IP for mobile connectivity
-const API_BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.1.10:8000';
+const RAW_API_BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.1.10:8000';
+const API_BASE_URL = RAW_API_BASE_URL.includes('localhost') || RAW_API_BASE_URL.includes('127.0.0.1')
+  ? 'http://192.168.1.10:8000'
+  : RAW_API_BASE_URL;
 
 interface PortfolioItem {
   id: number;
@@ -212,18 +214,29 @@ export default function CommercialPortfolio() {
           const formData = new FormData();
           formData.append('file', {
             uri: finalUri,
-            name: asset.name,
+            name: asset.name || `portfolio-${Date.now()}.${activeTab === 'image' ? 'jpg' : 'mp4'}`,
             type: asset.mimeType || (activeTab === 'image' ? 'image/jpeg' : 'video/mp4'),
           } as any);
 
           try {
-            const response = await axios.post(`${API_BASE_URL}/api/upload`, formData, {
+            const uploadUrl = `${API_BASE_URL}/api/upload`;
+            console.log('[Commercial Upload] Uploading image:', finalUri);
+            console.log('[Commercial Upload] Upload URL:', uploadUrl);
+
+            const response = await axios.post(uploadUrl, formData, {
               headers: { 'Content-Type': 'multipart/form-data' },
               timeout: 8000 // Fast fail for fallback
             });
+            console.log('[Commercial Upload] Server response:', response.data);
 
-            const serverUrl = `${API_BASE_URL}${response.data.url}`;
-            const thumbUrl = response.data.thumbnail_url ? `${API_BASE_URL}${response.data.thumbnail_url}` : null;
+            const uploadedUrl = response?.data?.url;
+            if (!uploadedUrl) {
+              throw new Error('Upload response missing url');
+            }
+
+            const serverUrl = String(uploadedUrl).startsWith('http') ? uploadedUrl : `${API_BASE_URL}${uploadedUrl}`;
+            const thumbRaw = response?.data?.thumbnail_url;
+            const thumbUrl = thumbRaw ? (String(thumbRaw).startsWith('http') ? thumbRaw : `${API_BASE_URL}${thumbRaw}`) : null;
 
             await portfolioService.create({
               title: asset.name,
@@ -234,7 +247,18 @@ export default function CommercialPortfolio() {
               featured: 0,
             });
           } catch (uploadErr) {
-            console.log("Server upload failed, using local storage fallback", uploadErr);
+            if (axios.isAxiosError(uploadErr)) {
+              console.log('Server upload failed, using local storage fallback', {
+                message: uploadErr.message,
+                code: uploadErr.code,
+                status: uploadErr.response?.status,
+                data: uploadErr.response?.data,
+                url: `${API_BASE_URL}/api/upload`,
+                imageUri: finalUri,
+              });
+            } else {
+              console.log('Server upload failed, using local storage fallback', uploadErr);
+            }
             await portfolioService.create({
               title: asset.name,
               media_type: activeTab,

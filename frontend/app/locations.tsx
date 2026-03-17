@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import * as locationsService from '../src/api/services/locations';
 import * as locationImagesService from '../src/api/services/locationImages';
+import * as appOptionsService from '../src/api/services/appOptions';
 import * as DocumentPicker from 'expo-document-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -86,6 +87,10 @@ export default function LocationGalleryPage() {
     venue_name: '',
     landmark: ''
   });
+  const [locationTypes, setLocationTypes] = useState<string[]>(LOCATION_TYPES);
+  const [addTypeModalVisible, setAddTypeModalVisible] = useState(false);
+  const [newTypeName, setNewTypeName] = useState('');
+  const [addingType, setAddingType] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -119,6 +124,53 @@ export default function LocationGalleryPage() {
   useEffect(() => {
     loadLocations();
   }, []);
+
+  const loadLocationTypes = useCallback(async () => {
+    try {
+      const allOptions = await appOptionsService.getAll();
+      const types = allOptions
+        .filter((option) => option.type === 'location_type')
+        .map((option) => String(option.label ?? '').trim())
+        .filter(Boolean);
+
+      if (types.length > 0) {
+        const unique = Array.from(new Set(types)).sort((a, b) => a.localeCompare(b));
+        setLocationTypes(unique);
+      } else {
+        setLocationTypes(LOCATION_TYPES);
+      }
+    } catch (e) {
+      setLocationTypes(LOCATION_TYPES);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadLocationTypes();
+  }, [loadLocationTypes]);
+
+  const handleAddLocationType = async () => {
+    const label = newTypeName.trim();
+    if (!label) {
+      Alert.alert('Validation Error', 'Category name is required.');
+      return;
+    }
+
+    try {
+      setAddingType(true);
+      const createdOrExisting = await appOptionsService.createIfNotExists('location_type', label);
+      await loadLocationTypes();
+
+      const selected = String(createdOrExisting?.label ?? label);
+      setFormData((prev) => ({ ...prev, type: selected }));
+      setAddTypeModalVisible(false);
+      setNewTypeName('');
+    } catch (error) {
+      console.error('Error adding location type:', error);
+      Alert.alert('Error', 'Failed to add category.');
+    } finally {
+      setAddingType(false);
+    }
+  };
 
   const stats = useMemo(() => {
     const total = locations.length;
@@ -563,11 +615,20 @@ export default function LocationGalleryPage() {
                 <TouchableOpacity style={[styles.filterChip, { backgroundColor: filters.type === 'all' ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, type: 'all' })}>
                   <Text style={{ color: filters.type === 'all' ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>All</Text>
                 </TouchableOpacity>
-                {LOCATION_TYPES.map(type => (
+                {locationTypes.map(type => (
                   <TouchableOpacity key={type} style={[styles.filterChip, { backgroundColor: filters.type === type ? colors.primary : colors.surfaceLight, borderColor: colors.borderLight }]} onPress={() => setFilters({ ...filters, type })}>
                     <Text style={{ color: filters.type === type ? '#fff' : colors.text, fontSize: 12, fontWeight: '600' }}>{type}</Text>
                   </TouchableOpacity>
                 ))}
+                <TouchableOpacity
+                  style={[styles.filterChip, { backgroundColor: colors.surfaceLight, borderColor: colors.primary }]}
+                  onPress={() => {
+                    setNewTypeName('');
+                    setAddTypeModalVisible(true);
+                  }}
+                >
+                  <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700' }}>+ Add Category</Text>
+                </TouchableOpacity>
               </View>
 
               <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Payment Status</Text>
@@ -650,7 +711,7 @@ export default function LocationGalleryPage() {
                 <View style={{ flex: 1, marginRight: 8 }}>
                   <Text style={[styles.label, { color: colors.textSecondary }]}>Type</Text>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.typeSelectRow}>
-                    {LOCATION_TYPES.map(type => (
+                    {locationTypes.map(type => (
                       <TouchableOpacity
                         key={type}
                         onPress={() => setFormData({...formData, type})}
@@ -659,6 +720,15 @@ export default function LocationGalleryPage() {
                         <Text style={[styles.typeOptionText, { color: formData.type === type ? '#fff' : colors.textSecondary }]}>{type}</Text>
                       </TouchableOpacity>
                     ))}
+                    <TouchableOpacity
+                      onPress={() => {
+                        setNewTypeName('');
+                        setAddTypeModalVisible(true);
+                      }}
+                      style={[styles.typeOption, { borderColor: colors.primary }]}
+                    >
+                      <Text style={[styles.typeOptionText, { color: colors.primary }]}>+ Add Category</Text>
+                    </TouchableOpacity>
                   </ScrollView>
                 </View>
               </View>
@@ -763,6 +833,44 @@ export default function LocationGalleryPage() {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={addTypeModalVisible} transparent animationType="fade" onRequestClose={() => setAddTypeModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.pickerContainer, { backgroundColor: colors.surface, width: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>Add Category</Text>
+              <TouchableOpacity onPress={() => setAddTypeModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ padding: 20 }}>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, color: colors.text }]}
+                placeholder="Category Name"
+                placeholderTextColor={colors.textTertiary}
+                value={newTypeName}
+                onChangeText={setNewTypeName}
+              />
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                <TouchableOpacity
+                  style={[styles.iconBtn, { flex: 1, borderColor: colors.border }]}
+                  onPress={() => setAddTypeModalVisible(false)}
+                  disabled={addingType}
+                >
+                  <Text style={{ color: colors.textSecondary, fontWeight: '600' }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitBtn, { flex: 1, backgroundColor: colors.primary, marginTop: 0 }]}
+                  onPress={handleAddLocationType}
+                  disabled={addingType}
+                >
+                  {addingType ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitBtnText}>Add</Text>}
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
     </View>
   );

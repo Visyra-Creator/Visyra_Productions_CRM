@@ -24,6 +24,8 @@ import * as paymentsService from '../src/api/services/payments';
 import * as paymentRecordsService from '../src/api/services/paymentRecords';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, startOfMonth, endOfMonth, isWithinInterval, startOfYear, endOfYear } from 'date-fns';
+import { useRouter } from 'expo-router';
+import { useAuthStore } from '../src/store/authStore';
 
 interface AppOption {
   id: number;
@@ -52,6 +54,20 @@ const EXPENSE_STATUSES_DEFAULTS = [
 export default function Expenses() {
   const { colors } = useThemeStore();
   const { width: screenWidth } = useWindowDimensions();
+  const router = useRouter();
+  const { role } = useAuthStore();
+
+  // ── Role Guard ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (role !== null && role !== 'admin') {
+      router.replace('/');
+    }
+  }, [role, router]);
+
+  if (role !== null && role !== 'admin') {
+    return null;
+  }
+  // ───────────────────────────────────────────────────────────────────────────
 
   const [expenses, setExpenses] = useState<any[]>([]);
   const [shoots, setShoots] = useState<any[]>([]);

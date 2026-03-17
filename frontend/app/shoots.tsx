@@ -66,6 +66,9 @@ export default function Shoots() {
   const [statusPickerVisible, setStatusPickerVisible] = useState(false);
   const [clientPickerVisible, setClientPickerVisible] = useState(false);
   const [eventTypePickerVisible, setEventTypePickerVisible] = useState(false);
+  const [addCategoryModalVisible, setAddCategoryModalVisible] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [currentMonth, setCurrentMonth] = useState(new Date());
 
@@ -88,6 +91,48 @@ export default function Shoots() {
     notes: '',
     status: 'upcoming'
   });
+
+  const ADD_CATEGORY_ID = -999999;
+  const eventTypesWithAdd = useMemo(
+    () => [...eventTypes, { id: ADD_CATEGORY_ID, type: '__add__', label: '+ Add Category', value: '__add__' } as AppOption],
+    [eventTypes]
+  );
+
+  const refreshEventTypes = useCallback(async () => {
+    const latestOptions = await appOptionsService.getAll();
+    setEventTypes(
+      latestOptions
+        .filter((option) => option.type === 'event_type')
+        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
+    );
+  }, []);
+
+  const handleAddEventTypeCategory = async () => {
+    const label = newCategoryName.trim();
+    if (!label) {
+      Alert.alert('Validation Error', 'Category name is required.');
+      return;
+    }
+
+    try {
+      setAddingCategory(true);
+      const createdOrExisting = await appOptionsService.createIfNotExists('event_type', label);
+      await refreshEventTypes();
+
+      if (createdOrExisting) {
+        setFormData((prev) => ({ ...prev, event_type: String(createdOrExisting.label ?? label) }));
+      }
+
+      setAddCategoryModalVisible(false);
+      setEventTypePickerVisible(false);
+      setNewCategoryName('');
+    } catch (error) {
+      console.error('Error adding event type category:', error);
+      Alert.alert('Error', 'Failed to add category.');
+    } finally {
+      setAddingCategory(false);
+    }
+  };
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -632,7 +677,9 @@ export default function Shoots() {
                       style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
                       onPress={() => setStatusPickerVisible(true)}
                     >
-                      <Text style={{ color: colors.text }}>{STATUS_OPTIONS.find(o => o.value === formData.status)?.label}</Text>
+                      <Text style={{ color: colors.text }}>
+                        {shootStatuses.find(o => o.value === formData.status)?.label || SHOOT_STATUSES_DEFAULTS.find(o => o.value === formData.status)?.label || 'Select Status'}
+                      </Text>
                       <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
                     </TouchableOpacity>
                   </View>
@@ -776,21 +823,65 @@ export default function Shoots() {
               </TouchableOpacity>
             </View>
             <FlatList
-              data={eventTypes}
-              keyExtractor={(item) => item.id.toString()}
+              data={eventTypesWithAdd}
+              keyExtractor={(item, index) => `${item.id}-${index}`}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.pickerItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
+                    if (item.id === ADD_CATEGORY_ID) {
+                      setNewCategoryName('');
+                      setAddCategoryModalVisible(true);
+                      return;
+                    }
                     setFormData({ ...formData, event_type: item.label });
                     setEventTypePickerVisible(false);
                   }}
                 >
-                  <Text style={[styles.pickerText, { color: colors.text }]}>{item.label}</Text>
-                  {formData.event_type === item.label && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
+                  <Text style={[styles.pickerText, { color: item.id === ADD_CATEGORY_ID ? colors.primary : colors.text }]}>{item.label}</Text>
+                  {item.id !== ADD_CATEGORY_ID && formData.event_type === item.label && <Ionicons name="checkmark-circle" size={20} color={colors.primary} />}
                 </TouchableOpacity>
               )}
             />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={addCategoryModalVisible} transparent animationType="fade" onRequestClose={() => setAddCategoryModalVisible(false)}>
+        <View style={styles.pickerOverlay}>
+          <View style={[styles.pickerContent, { backgroundColor: colors.surface, width: '85%', maxHeight: '45%' }]}
+          >
+            <View style={[styles.pickerHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[styles.pickerTitle, { color: colors.text }]}>Add Category</Text>
+              <TouchableOpacity onPress={() => setAddCategoryModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={{ padding: 16 }}>
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, borderWidth: 1, color: colors.text }]}
+                placeholder="Category Name"
+                placeholderTextColor={colors.textTertiary}
+                value={newCategoryName}
+                onChangeText={setNewCategoryName}
+              />
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[styles.navBtn, { flex: 1, borderColor: colors.border }]}
+                  onPress={() => setAddCategoryModalVisible(false)}
+                  disabled={addingCategory}
+                >
+                  <Text style={{ color: colors.textSecondary, fontWeight: '600' }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.submitButton, { flex: 1, backgroundColor: colors.primary }]}
+                  onPress={handleAddEventTypeCategory}
+                  disabled={addingCategory}
+                >
+                  {addingCategory ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitButtonText}>Add</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         </View>
       </Modal>

@@ -11,6 +11,7 @@ import {
   FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from 'expo-router';
 import { useThemeStore } from '../src/store/themeStore';
 import * as appOptionsService from '../src/api/services/appOptions';
 
@@ -102,6 +103,12 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
   useEffect(() => {
     loadOptions();
   }, [loadOptions]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadOptions();
+    }, [loadOptions])
+  );
 
   const handleSave = async () => {
     if (!newOptionLabel.trim()) {
