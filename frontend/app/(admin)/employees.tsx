@@ -90,9 +90,8 @@ export default function EmployeesScreen() {
       setApproving(userId);
       const updatedUser = await usersService.approveUser(userId);
 
-      if (updatedUser) {
-        setPendingUsers(pendingUsers.filter(u => u.id !== userId));
-        setAllUsers([...allUsers.filter(u => u.id !== userId), { ...updatedUser, approved: true } as User]);
+      if (updatedUser?.approved) {
+        await loadUsers();
         Alert.alert('Success', 'Employee has been approved');
       } else {
         Alert.alert('Error', 'Failed to approve employee');
@@ -581,4 +580,3 @@ const styles = StyleSheet.create({
     maxWidth: '80%',
   },
 });
-

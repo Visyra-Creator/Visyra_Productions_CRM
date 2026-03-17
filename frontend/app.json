@@ -18,7 +18,6 @@
     },
     "android": {
       "package": "com.visyracrm.app",
-      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#0a0a0f"
@@ -30,11 +29,16 @@
       ]
     },
     "web": {
-      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ae609f3e-9301-41ef-8ff6-84ea882c4c57"
+      }
+    }
   }
 }

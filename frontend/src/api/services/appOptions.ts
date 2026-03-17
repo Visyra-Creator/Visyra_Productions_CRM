@@ -16,6 +16,12 @@ function isMissingTableError(error: any): boolean {
   return code === 'PGRST205' || message.includes('could not find the table');
 }
 
+function isRlsError(error: any): boolean {
+  const code = String(error?.code ?? '');
+  const message = String(error?.message ?? '').toLowerCase();
+  return code === '42501' || message.includes('row-level security') || message.includes('violates row-level');
+}
+
 function warnMissingTableOnce(error: any) {
   if (!warnedMissingTable) {
     warnedMissingTable = true;
@@ -80,6 +86,10 @@ export async function getAll(): Promise<AppOptionRecord[]> {
       warnMissingTableOnce(error);
       return [...localOptionsStore];
     }
+    if (isRlsError(error)) {
+      // RLS blocking read — run backend/migrations/2026-03-17_fix_rls_app_options_and_role.sql
+      return [...localOptionsStore];
+    }
     console.error('Supabase error:', error);
     return [...localOptionsStore];
   }
@@ -104,6 +114,11 @@ export async function create(payload: AppOptionCreateInput): Promise<AppOptionRe
     return upsertLocalOption(payload);
   }
 
+  if (isRlsError(error)) {
+    // RLS blocking insert — run backend/migrations/2026-03-17_fix_rls_app_options_and_role.sql
+    return upsertLocalOption(payload);
+  }
+
   // Fallback for key/value schema: persist type + label into key.
   const fallbackPayload = {
     key: `${payload?.type ?? 'general'}:${payload?.label ?? payload?.value ?? 'option'}`,
@@ -119,6 +134,9 @@ export async function create(payload: AppOptionCreateInput): Promise<AppOptionRe
   if (fallbackError) {
     if (isMissingTableError(fallbackError)) {
       warnMissingTableOnce(fallbackError);
+      return upsertLocalOption(payload);
+    }
+    if (isRlsError(fallbackError)) {
       return upsertLocalOption(payload);
     }
     console.error('Supabase error:', fallbackError);
@@ -163,6 +181,10 @@ export async function update(id: string, payload: AppOptionUpdateInput): Promise
     return upsertLocalOption(payload, id);
   }
 
+  if (isRlsError(error)) {
+    return upsertLocalOption(payload, id);
+  }
+
   // Fallback for key/value schema: update value only when label/type columns do not exist.
   const fallbackUpdate = {
     value: payload?.value ?? payload?.label ?? '',
@@ -177,6 +199,9 @@ export async function update(id: string, payload: AppOptionUpdateInput): Promise
   if (fallbackError) {
     if (isMissingTableError(fallbackError)) {
       warnMissingTableOnce(fallbackError);
+      return upsertLocalOption(payload, id);
+    }
+    if (isRlsError(fallbackError)) {
       return upsertLocalOption(payload, id);
     }
     console.error('Supabase error:', fallbackError);
@@ -194,6 +219,9 @@ async function deleteById(id: string): Promise<void> {
   if (error) {
     if (isMissingTableError(error)) {
       warnMissingTableOnce(error);
+      return;
+    }
+    if (isRlsError(error)) {
       return;
     }
     console.error('Supabase error:', error);

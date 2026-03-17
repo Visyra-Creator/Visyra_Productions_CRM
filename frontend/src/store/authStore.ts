@@ -39,6 +39,11 @@ function clearUser(error: string | null = null) {
   };
 }
 
+function isMissingSessionError(error: unknown): boolean {
+  const message = (error as { message?: string } | null)?.message?.toLowerCase?.() ?? '';
+  return message.includes('auth session missing');
+}
+
 // ─── Store ────────────────────────────────────────────────────────────────────
 
 export const useAuthStore = create<AuthStore>((set) => ({
@@ -77,29 +82,60 @@ export const useAuthStore = create<AuthStore>((set) => ({
   checkSession: async () => {
     set({ loading: true });
     try {
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
 
       if (sessionError) {
+        if (isMissingSessionError(sessionError)) {
+          set({ ...clearUser() });
+          return;
+        }
         console.error('[authStore] getSession error:', sessionError.message);
         set({ ...clearUser() });
         return;
       }
 
-      if (!session?.user) {
+      if (!sessionData.session?.user?.id) {
         set({ ...clearUser() });
         return;
       }
 
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+
+      if (authError) {
+        if (isMissingSessionError(authError)) {
+          set({ ...clearUser() });
+          return;
+        }
+        console.error('[authStore] getUser error:', authError.message);
+        set({ ...clearUser() });
+        return;
+      }
+
+      console.log('Auth User ID:', authData.user.id);
+
       const { data: userData, error: userError } = await supabase
         .from('users')
         .select('id, email, name, username, phone, role, approved')
-        .eq('id', session.user.id)
+        .eq('id', authData.user.id)
         .single();
 
-      if (userError || !userData) {
+      if (userError) {
         console.error('[authStore] user fetch error:', userError?.message);
         set({ ...clearUser() });
         return;
+      }
+
+      console.log('Fetched User Row:', userData);
+      console.log('Approved:', userData?.approved);
+
+      if (!userData) {
+        console.log('User row not found');
+        set({ ...clearUser() });
+        return;
+      }
+
+      if (!userData.approved) {
+        console.log('User not approved');
       }
 
       set(applyUser(userData as AuthUser));

@@ -36,6 +36,8 @@ export interface LoginPayload {
 
 /** Fetch the full user row from public.users by auth id. */
 async function fetchUserRow(id: string): Promise<AuthUser | null> {
+  console.log('Auth User ID:', id);
+
   const { data, error } = await supabase
     .from('users')
     .select('id, email, name, username, phone, role, approved')
@@ -48,10 +50,19 @@ async function fetchUserRow(id: string): Promise<AuthUser | null> {
   }
 
   if (!data) {
+    console.log('User row not found');
     return null;
   }
 
-  return data as AuthUser;
+  const normalizedUser: AuthUser = {
+    ...(data as AuthUser),
+    approved: normalizeApproved((data as { approved?: unknown }).approved),
+  };
+
+  console.log('Fetched User Row:', normalizedUser);
+  console.log('Approved:', normalizedUser.approved);
+
+  return normalizedUser;
 }
 
 /** Map raw Supabase / DB error codes to friendly messages. */
@@ -76,6 +87,18 @@ function mapError(message: string, code?: string): string {
     return 'Your account is not activated yet. Please contact admin if you are already approved.';
   }
   return message;
+}
+
+function isMissingSessionError(error: unknown): boolean {
+  const message = (error as { message?: string } | null)?.message?.toLowerCase?.() ?? '';
+  return message.includes('auth session missing');
+}
+
+function normalizeApproved(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.toLowerCase() === 'true';
+  if (typeof value === 'number') return value === 1;
+  return false;
 }
 
 // ─── signup ───────────────────────────────────────────────────────────────────
@@ -195,7 +218,15 @@ export async function login(payload: LoginPayload): Promise<AuthResult> {
   }
 
   // ── Step 3: fetch role + approved from public.users ─────────────────────────
-  const userRow = await fetchUserRow(authData.user.id);
+  // Retry briefly to avoid false negatives if approval was just toggled.
+  let userRow: AuthUser | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    userRow = await fetchUserRow(authData.user.id);
+    if (userRow) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 
   if (!userRow) {
     await supabase.auth.signOut();
@@ -203,10 +234,16 @@ export async function login(payload: LoginPayload): Promise<AuthResult> {
   }
 
   // ── Step 4: block if not yet approved ───────────────────────────────────────
-  if (!userRow.approved) {
+  const isApproved = normalizeApproved(userRow.approved);
+  console.log('[login] Auth UID:', authData.user.id);
+  console.log('[login] Raw approved value from DB:', userRow.approved, '| type:', typeof userRow.approved);
+  console.log('[login] Normalized approved:', isApproved);
+  console.log('[login] Decision:', isApproved ? '✅ ALLOW login' : '🚫 BLOCK — not approved');
+
+  if (!isApproved) {
     await supabase.auth.signOut();
     return {
-      user:  null,
+      user: null,
       error: 'Your account is pending admin approval. Please check back later.',
     };
   }
@@ -217,9 +254,33 @@ export async function login(payload: LoginPayload): Promise<AuthResult> {
 // ─── getCurrentUser ───────────────────────────────────────────────────────────
 
 export async function getCurrentUser(): Promise<AuthUser | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) return null;
-  return fetchUserRow(session.user.id);
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+
+  if (sessionError) {
+    if (!isMissingSessionError(sessionError)) {
+      console.error('[auth] getCurrentUser getSession error:', sessionError.message);
+    }
+    return null;
+  }
+
+  if (!sessionData.session?.user?.id) {
+    return null;
+  }
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+
+  if (authError) {
+    if (!isMissingSessionError(authError)) {
+      console.error('[auth] getCurrentUser getUser error:', authError.message);
+    }
+    return null;
+  }
+
+  if (!authData.user?.id) {
+    return null;
+  }
+
+  return fetchUserRow(authData.user.id);
 }
 
 // ─── logout ───────────────────────────────────────────────────────────────────

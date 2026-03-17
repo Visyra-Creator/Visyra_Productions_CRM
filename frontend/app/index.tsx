@@ -1068,11 +1068,13 @@ export default function Dashboard() {
 
           {/* Manage Section */}
           <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>Manage</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 12 }]}>Manage</Text>
             <View style={[styles.cardContainer, { backgroundColor: colors.surface, padding: 0 }]}>
               <ManageItem icon="people-outline" title="Clients" color={colors.primary} onPress={() => router.push('/clients')} />
               <ManageItem icon="camera-outline" title="Shoots" color={colors.accent} onPress={() => router.push('/shoots')} />
-              <ManageItem icon="card-outline" title="Payments" color={colors.error} onPress={() => router.push('/payments')} />
+              {role === 'admin' && (
+                <ManageItem icon="card-outline" title="Payments" color={colors.error} onPress={() => router.push('/payments')} />
+              )}
               <ManageItem
                 icon="gift-outline"
                 title="Packages"
