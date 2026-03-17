@@ -57,6 +57,7 @@ export default function Expenses() {
   const { colors } = useThemeStore();
   const { width: screenWidth } = useWindowDimensions();
   const isTablet = screenWidth > 768;
+  const isSmallScreen = !isTablet;
   const summaryCardBasis = isTablet ? '31%' : (screenWidth < 390 ? '48%' : '31%');
   const router = useRouter();
   const { role } = useAuthStore();
@@ -609,8 +610,8 @@ export default function Expenses() {
         <SummaryCard title="This Year" count={`₹${Math.round(stats.thisYear).toLocaleString('en-IN')}`} icon="stats-chart-outline" gradient={['#3b82f6', '#2563eb']} type="year" />
       </View>
 
-      <View style={styles.searchBarRow}>
-        <View style={[styles.searchBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View style={[styles.searchBarRow, isSmallScreen && styles.searchBarRowCompact]}>
+        <View style={[styles.searchBox, { backgroundColor: colors.surface, borderColor: colors.border }, isSmallScreen && styles.searchBoxCompact]}>
           <Ionicons name="search" size={18} color={colors.textTertiary} />
           <TextInput
             placeholder="Search expenses..."
@@ -840,7 +841,9 @@ const styles = StyleSheet.create({
   summaryIconContainer: { borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
 
   searchBarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 10, marginTop: 15 },
+  searchBarRowCompact: { flexWrap: 'wrap', rowGap: 10 },
   searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, height: 44 },
+  searchBoxCompact: { flexBasis: '100%', width: '100%' },
   searchInput: { flex: 1, marginLeft: 8, fontSize: 14 },
   actionBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, elevation: 2 },
 

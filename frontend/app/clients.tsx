@@ -102,6 +102,7 @@ type SortKey = 'id_asc' | 'id_desc' | 'date_desc' | 'date_asc' | 'name_asc';
 export default function Clients() {
   const { width, height } = useWindowDimensions();
   const isTablet = width > 768;
+  const isSmallScreen = !isTablet;
   const isCompactPhone = width < 390;
   const summaryCardBasis = isTablet ? '31%' : (width < 390 ? '48%' : '31%');
   const { colors } = useThemeStore();
@@ -1293,8 +1294,8 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
       </View>
 
       {/* Filter and Search Bar */}
-      <View style={styles.filterBar}>
-        <View style={[styles.searchContainer, { backgroundColor: colors.surface }]}>
+      <View style={[styles.filterBar, isSmallScreen && styles.filterBarCompact]}>
+        <View style={[styles.searchContainer, { backgroundColor: colors.surface }, isSmallScreen && styles.searchContainerCompact]}>
           <Ionicons name="search-outline" size={20} color={colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: colors.text }]}
@@ -2224,7 +2225,9 @@ const styles = StyleSheet.create({
   summaryIconContainer: { borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
 
   filterBar: { flexDirection: 'row', paddingHorizontal: 16, gap: 12, marginBottom: 12, alignItems: 'center' },
+  filterBarCompact: { flexWrap: 'wrap', rowGap: 10 },
   searchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, borderRadius: 16, height: 48 },
+  searchContainerCompact: { flexBasis: '100%', width: '100%' },
   searchInput: { flex: 1, paddingHorizontal: 8, fontSize: 16 },
   iconButton: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 48, paddingHorizontal: 12, borderRadius: 16, elevation: 2 },

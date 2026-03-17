@@ -152,6 +152,7 @@ export default function CommercialPortfolio() {
   const imageListRef = useRef<FlatList>(null);
   const [activeItemActions, setActiveItemActions] = useState<number | null>(null);
   const [dimensions, setDimensions] = useState(Dimensions.get('window'));
+  const isSmallScreen = dimensions.width <= 768;
   const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -459,9 +460,9 @@ export default function CommercialPortfolio() {
         </View>
       )}
       <View style={styles.header}>
-        <View style={styles.searchRow}>
+        <View style={[styles.searchRow, isSmallScreen && styles.searchRowCompact]}>
           <TextInput
-            style={[styles.searchInput, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
+            style={[styles.searchInput, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }, isSmallScreen && styles.searchInputCompact]}
             placeholder="Search Commercial..."
             placeholderTextColor={colors.textTertiary}
             value={searchQuery}
@@ -511,7 +512,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { padding: 16 },
   searchRow: { flexDirection: 'row', gap: 10 },
+  searchRowCompact: { flexWrap: 'wrap', rowGap: 10 },
   searchInput: { flex: 1, height: 48, borderRadius: 12, paddingHorizontal: 16, borderWidth: 1 },
+  searchInputCompact: { flexBasis: '100%', width: '100%' },
   uploadBtn: { width: 48, height: 48, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   tabBar: { flexDirection: 'row', marginTop: 16 },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: 'transparent' },

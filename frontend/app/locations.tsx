@@ -386,6 +386,7 @@ export default function LocationGalleryPage() {
   };
 
   const isTablet = width > 768;
+  const isSmallScreen = !isTablet;
   const numColumns = isTablet ? 3 : 1;
   const cardWidth = isTablet ? (width - 60) / 3 : (width - 40);
 
@@ -418,8 +419,8 @@ export default function LocationGalleryPage() {
       </View>
 
       <View style={styles.filtersSection}>
-        <View style={styles.searchRow}>
-          <View style={[styles.searchBox, { flex: 1, backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.searchRow, isSmallScreen && styles.searchRowCompact]}>
+          <View style={[styles.searchBox, { flex: 1, backgroundColor: colors.surface, borderColor: colors.border }, isSmallScreen && styles.searchBoxCompact]}>
             <Ionicons name="search" size={18} color={colors.textTertiary} />
             <TextInput
               placeholder="Search locations..."
@@ -961,7 +962,9 @@ const styles = StyleSheet.create({
   },
   filtersSection: { paddingHorizontal: 20, marginBottom: 10 },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  searchRowCompact: { flexWrap: 'wrap', rowGap: 10 },
   searchBox: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, height: 48 },
+  searchBoxCompact: { flexBasis: '100%', width: '100%' },
   searchInput: { flex: 1, height: 48, marginLeft: 8, fontSize: 14 },
   iconBtn: { width: 48, height: 48, borderRadius: 12, borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
   addBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 48, borderRadius: 12, paddingHorizontal: 16, gap: 8 },

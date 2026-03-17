@@ -80,6 +80,7 @@ export default function Payments() {
   // Hooks must be called unconditionally and in the same order
   const { width, height } = useWindowDimensions();
   const isTablet = width > 768;
+  const isSmallScreen = !isTablet;
   const summaryCardBasis = isTablet ? '31%' : (width < 390 ? '48%' : '31%');
   const { colors } = useThemeStore();
   const router = useRouter();
@@ -971,8 +972,8 @@ export default function Payments() {
         <SummaryCard title="Collected" count={`₹${stats.totalCollected.toLocaleString()}`} icon="checkmark-done-outline" gradient={['#8b5cf6', '#7c3aed']} />
       </View>
 
-      <View style={styles.filterBar}>
-        <View style={[styles.searchContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View style={[styles.filterBar, isSmallScreen && styles.filterBarCompact]}>
+        <View style={[styles.searchContainer, { backgroundColor: colors.surface, borderColor: colors.border }, isSmallScreen && styles.searchContainerCompact]}>
           <Ionicons name="search-outline" size={20} color={colors.textTertiary} />
           <TextInput
             style={[styles.searchInput, { color: colors.text }]}
@@ -1424,7 +1425,9 @@ const styles = StyleSheet.create({
   summaryIconContainer: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   summaryIconContainerLight: { backgroundColor: 'rgba(255,255,255,0.2)' },
   filterBar: { flexDirection: 'row', paddingHorizontal: 16, gap: 10, marginTop: 15, marginBottom: 12, alignItems: 'center' },
+  filterBarCompact: { flexWrap: 'wrap', rowGap: 10 },
   searchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, height: 44, borderWidth: 1 },
+  searchContainerCompact: { flexBasis: '100%', width: '100%' },
   searchInput: { flex: 1, paddingHorizontal: 8, fontSize: 16 },
   iconButton: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, elevation: 2 },
   addBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, elevation: 2 },
