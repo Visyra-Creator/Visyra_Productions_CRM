@@ -13,16 +13,23 @@ import {
   Platform,
   useWindowDimensions,
   ActivityIndicator,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import * as shootsService from '../src/api/services/shoots';
 import * as clientsService from '../src/api/services/clients';
 import * as appOptionsService from '../src/api/services/appOptions';
+import {
+  fetchShootEventTypes,
+  createShootEventType,
+  fetchShootsPageData,
+} from '../src/api/services/shootsPage';
 import { format, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, startOfWeek, endOfWeek, isToday, isSameDay, isSameWeek, addDays, subDays, addWeeks, subWeeks, startOfDay, endOfDay, isWithinInterval, setHours, setMinutes } from 'date-fns';
 import { LinearGradient } from 'expo-linear-gradient';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 
 interface Shoot {
   id: number;
@@ -74,6 +81,9 @@ export default function Shoots() {
 
   // Ref to track if navigation parameters have been processed
   const navigationParamsProcessed = useRef(false);
+  const isLoadingDataRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Date/Time Picker State
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -98,13 +108,19 @@ export default function Shoots() {
     [eventTypes]
   );
 
+  const statusOptions = useMemo<AppOption[]>(() => {
+    if (shootStatuses.length > 0) return shootStatuses;
+    return SHOOT_STATUSES_DEFAULTS.map((status, index) => ({
+      id: -(index + 1),
+      type: 'shoot_status',
+      label: status.label,
+      value: status.value,
+    }));
+  }, [shootStatuses]);
+
   const refreshEventTypes = useCallback(async () => {
-    const latestOptions = await appOptionsService.getAll();
-    setEventTypes(
-      latestOptions
-        .filter((option) => option.type === 'event_type')
-        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-    );
+    const eventTypeOptions = await fetchShootEventTypes();
+    setEventTypes(eventTypeOptions as AppOption[]);
   }, []);
 
   const handleAddEventTypeCategory = async () => {
@@ -116,7 +132,7 @@ export default function Shoots() {
 
     try {
       setAddingCategory(true);
-      const createdOrExisting = await appOptionsService.createIfNotExists('event_type', label);
+      const createdOrExisting = await createShootEventType(label);
       await refreshEventTypes();
 
       if (createdOrExisting) {
@@ -134,55 +150,85 @@ export default function Shoots() {
     }
   };
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (reason = 'manual', opts?: { force?: boolean }) => {
+    const now = Date.now();
+    if (isLoadingDataRef.current) {
+      console.log(`[Shoots] Skipping ${reason}; fetch already in progress.`);
+      return;
+    }
+    if (!opts?.force && now - lastLoadAtRef.current < 500) {
+      console.log(`[Shoots] Skipping ${reason}; throttled.`);
+      return;
+    }
+
+    isLoadingDataRef.current = true;
     setLoading(true);
     try {
-      // Seed default shoot statuses if they don't exist
-      const allOptions = await appOptionsService.getAll();
-      const existingStatuses = allOptions.filter((option) => option.type === 'shoot_status');
-      if (existingStatuses.length === 0) {
-        for (const status of SHOOT_STATUSES_DEFAULTS) {
-          await appOptionsService.create({ type: 'shoot_status', label: status.label, value: status.value });
-        }
-      }
+      console.log(`[Shoots] Loading data (${reason})...`);
+      const data = await fetchShootsPageData({
+        shootStatusesDefaults: SHOOT_STATUSES_DEFAULTS,
+      });
 
-      const [shootResult, clientResult, latestOptions] = await Promise.all([
-        shootsService.getAll(),
-        clientsService.getAll(),
-        appOptionsService.getAll(),
-      ]);
-
-      const clientsById = new Map(clientResult.map((client: any) => [String(client.id), client]));
-      const shootsWithClient = shootResult
-        .map((shoot: any) => ({
-          ...shoot,
-          client_name: clientsById.get(String(shoot.client_id))?.name ?? '',
-        }))
-        .sort((a: any, b: any) => String(a.shoot_date ?? '').localeCompare(String(b.shoot_date ?? '')));
-
-      setShoots(shootsWithClient as Shoot[]);
-      setClients(
-        [...clientResult].sort((a: any, b: any) => String(a.name ?? '').localeCompare(String(b.name ?? '')))
-      );
-      setEventTypes(
-        latestOptions
-          .filter((option) => option.type === 'event_type')
-          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-      );
-      setShootStatuses(
-        latestOptions
-          .filter((option) => option.type === 'shoot_status')
-          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
-      );
+      setShoots(data.shoots as Shoot[]);
+      setClients(data.clients as any[]);
+      setEventTypes(data.eventTypes as AppOption[]);
+      setShootStatuses(data.shootStatuses as AppOption[]);
     } catch (error) {
       console.error('Error loading shoots data:', error);
     } finally {
+      lastLoadAtRef.current = Date.now();
+      isLoadingDataRef.current = false;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadData();
+    void loadData('mount', { force: true });
+  }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadData('focus');
+      return () => {};
+    }, [loadData])
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void loadData('app-active');
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [loadData]);
+
+  useEffect(() => {
+    const scheduleRefresh = (reason: string) => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData(reason, { force: true });
+      }, 250);
+    };
+
+    const unsubscribeShoots = shootsService.subscribeToShootChanges(() => {
+      scheduleRefresh('realtime-shoots');
+    });
+    const unsubscribeClients = clientsService.subscribeToClientChanges(() => {
+      scheduleRefresh('realtime-clients');
+    });
+    const unsubscribeOptions = appOptionsService.subscribeToAppOptionChanges(() => {
+      scheduleRefresh('realtime-options');
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribeShoots();
+      unsubscribeClients();
+      unsubscribeOptions();
+    };
   }, [loadData]);
 
   // Auto-fill form from client navigation params
@@ -307,13 +353,14 @@ export default function Shoots() {
           onPress: async () => {
             try {
               await shootsService.delete(String(id));
-              loadData();
+              await loadData('after-delete-shoot', { force: true });
               Alert.alert('Success', 'Shoot deleted successfully');
               // Close modal after deletion to prevent reappearing
               setModalVisible(false);
             } catch (error) {
               console.error(error);
-              Alert.alert('Error', 'Failed to delete shoot');
+              const message = error instanceof Error ? error.message : 'Failed to delete shoot';
+              Alert.alert('Delete blocked', message);
             }
           }
         }
@@ -366,7 +413,7 @@ export default function Shoots() {
       });
       setEditingShoot(null);
       setModalVisible(false);
-      loadData();
+      await loadData('after-save-shoot', { force: true });
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to save shoot');
@@ -678,7 +725,7 @@ export default function Shoots() {
                       onPress={() => setStatusPickerVisible(true)}
                     >
                       <Text style={{ color: colors.text }}>
-                        {shootStatuses.find(o => o.value === formData.status)?.label || SHOOT_STATUSES_DEFAULTS.find(o => o.value === formData.status)?.label || 'Select Status'}
+                        {statusOptions.find(o => o.value === formData.status)?.label || 'Select Status'}
                       </Text>
                       <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
                     </TouchableOpacity>
@@ -890,7 +937,7 @@ export default function Shoots() {
         <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={() => setStatusPickerVisible(false)}>
           <View style={[styles.pickerContent, { backgroundColor: colors.surface, paddingBottom: 20 }]}>
             <Text style={[styles.pickerTitle, { color: colors.text, padding: 20, textAlign: 'center' }]}>Update Status</Text>
-            {shootStatuses.map((option) => (
+            {statusOptions.map((option) => (
               <TouchableOpacity
                 key={option.value}
                 style={[styles.pickerItem, { borderBottomColor: colors.border, paddingVertical: 18 }]}

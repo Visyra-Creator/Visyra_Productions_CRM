@@ -1,0 +1,20 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- tapOn: "Total Shoots"
+- tapOn: "Schedule Shoot"
+- tapOn: "Select Client"
+- tapOn: "QA_CLIENT_AUTOMATION"
+- tapOn: "Event Type"
+- inputText: "QA_EVENT"
+- tapOn: "Save"
+- assertVisible: "Success"
+- tapOn: "OK"
+# Validate relationship from payments path
+- back
+- tapOn: "Pending Payments"
+- tapOn: "Create Invoice"
+- tapOn: "Select Client"
+- tapOn: "QA_CLIENT_AUTOMATION"
+- assertVisible: "Shoot / Event"
+

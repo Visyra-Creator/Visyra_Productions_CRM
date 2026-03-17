@@ -1,14 +1,4 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-
-// return number of calendar weeks covering the given month/year (4-6).
-const getWeeksInMonthCount = (month: number, year: number) => {
-  const firstDayOfMonth = new Date(year, month, 1);
-  const lastDayOfMonth = new Date(year, month + 1, 0);
-  const firstWeekStart = startOfWeek(firstDayOfMonth, { weekStartsOn: 1 });
-  const lastWeekEnd = endOfWeek(lastDayOfMonth, { weekStartsOn: 1 });
-  const diffInDays = Math.ceil((lastWeekEnd.getTime() - firstWeekStart.getTime()) / (1000 * 60 * 60 * 24));
-  return Math.ceil(diffInDays / 7);
-};
 import {
   View,
   Text,
@@ -24,7 +14,8 @@ import {
   FlatList,
   useWindowDimensions,
   Dimensions,
-  ActivityIndicator
+  ActivityIndicator,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
@@ -34,10 +25,22 @@ import * as clientsService from '../src/api/services/clients';
 import * as appOptionsService from '../src/api/services/appOptions';
 import * as paymentsService from '../src/api/services/payments';
 import * as leadsService from '../src/api/services/leads';
+import { fetchClientDropdownOptions, fetchClientsPageData } from '../src/api/services/clientsPage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, startOfWeek, endOfWeek, addWeeks, differenceInCalendarWeeks, isSameDay, isSameWeek, isSameMonth } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
+
+// return number of calendar weeks covering the given month/year (4-6).
+const getWeeksInMonthCount = (month: number, year: number) => {
+  const firstDayOfMonth = new Date(year, month, 1);
+  const lastDayOfMonth = new Date(year, month + 1, 0);
+  const firstWeekStart = startOfWeek(firstDayOfMonth, { weekStartsOn: 1 });
+  const lastWeekEnd = endOfWeek(lastDayOfMonth, { weekStartsOn: 1 });
+  const diffInDays = Math.ceil((lastWeekEnd.getTime() - firstWeekStart.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.ceil(diffInDays / 7);
+};
 
 interface Client {
   id: number;
@@ -71,7 +74,7 @@ interface AppOption {
 const CLIENT_STATUSES_DEFAULTS = [
   { label: 'Booked', value: 'booked', color: '#3b82f6' },
   { label: 'Scheduled', value: 'scheduled', color: '#8b5cf6' },
-  { label: 'Shoot Completed', value: 'shoot completed', color: '#10b981' },
+  { label: 'Shoot Completed', value: 'editing', color: '#10b981' },
   { label: 'Editing', value: 'editing', color: '#f59e0b' },
   { label: 'Delivered', value: 'delivered', color: '#059669' },
   { label: 'Closed', value: 'closed', color: '#6b7280' },
@@ -99,6 +102,8 @@ type SortKey = 'id_asc' | 'id_desc' | 'date_desc' | 'date_asc' | 'name_asc';
 export default function Clients() {
   const { width, height } = useWindowDimensions();
   const isTablet = width > 768;
+  const isCompactPhone = width < 390;
+  const summaryCardBasis = isTablet ? '31%' : (width < 390 ? '48%' : '31%');
   const { colors } = useThemeStore();
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -204,8 +209,11 @@ export default function Clients() {
     status: 'booked'
   });
 
-  // Prevent auto-prefill effect from running multiple times per navigation.
-  const leadPrefillAppliedRef = useRef(false);
+  // Track the last converted lead param we processed so each lead conversion can prefill once.
+  const lastProcessedLeadPrefillRef = useRef<string | null>(null);
+  const isLoadingDataRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const ADD_CATEGORY_ID = -999999;
 
@@ -217,35 +225,12 @@ export default function Clients() {
   }, [colors.primary]);
 
   const refreshDropdownOptions = useCallback(async () => {
-    const refreshedOptions = await appOptionsService.getAll();
+    const { eventTypes: nextEventTypes, availablePackages: nextPackages, leadSources: nextLeadSources } =
+      await fetchClientDropdownOptions(LEAD_SOURCES_DEFAULTS);
 
-    setEventTypes(
-      refreshedOptions
-        .filter((option) => option.type === 'event_type')
-        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-    );
-
-    setAvailablePackages(
-      refreshedOptions
-        .filter((option) => option.type === 'package')
-        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-    );
-
-    const leadSourceOptions = refreshedOptions
-      .filter((option) => option.type === 'lead_source')
-      .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[];
-
-    setLeadSources(
-      leadSourceOptions.length > 0
-        ? leadSourceOptions
-        : LEAD_SOURCES_DEFAULTS.map((source, index) => ({
-            id: -(index + 1),
-            type: 'lead_source',
-            label: source.label,
-            value: source.value,
-            color: source.color,
-          }))
-    );
+    setEventTypes(nextEventTypes as AppOption[]);
+    setAvailablePackages(nextPackages as AppOption[]);
+    setLeadSources(nextLeadSources as AppOption[]);
   }, []);
 
   const openAddCategoryModal = (type: 'event_type' | 'package' | 'lead_source') => {
@@ -322,111 +307,42 @@ export default function Clients() {
     return 'C' + nextNumber.toString().padStart(4, '0');
   }, [clients]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (reason = 'manual', opts?: { force?: boolean }) => {
+    const now = Date.now();
+    if (isLoadingDataRef.current) {
+      console.log(`[Clients] Skipping ${reason}; fetch already in progress.`);
+      return;
+    }
+    if (!opts?.force && now - lastLoadAtRef.current < 500) {
+      console.log(`[Clients] Skipping ${reason}; throttled.`);
+      return;
+    }
+
+    isLoadingDataRef.current = true;
     try {
-      console.log('[Clients] Starting data load...');
+      console.log(`[Clients] Starting data load (${reason})...`);
       setDbReady(true);
       setLoading(true);
 
-      console.log('[Clients] Fetching app options...');
-      const options = await appOptionsService.getAll();
-      console.log('[Clients] Got app options:', options.length, 'records');
-
-      const existingStatuses = options.filter((option) => option.type === 'client_status');
-      if (existingStatuses.length === 0) {
-        console.log('[Clients] Creating default client statuses...');
-        for (const status of CLIENT_STATUSES_DEFAULTS) {
-          await appOptionsService.create({
-            type: 'client_status',
-            label: status.label,
-            value: status.value,
-            color: status.color,
-          });
-        }
-        console.log('[Clients] Default statuses created');
-      }
-
-      const existingLeadSources = options.filter((option) => option.type === 'lead_source');
-      if (existingLeadSources.length === 0) {
-        console.log('[Clients] Creating default lead sources...');
-        for (const source of LEAD_SOURCES_DEFAULTS) {
-          await appOptionsService.create({
-            type: 'lead_source',
-            label: source.label,
-            value: source.value,
-            color: source.color,
-          });
-        }
-        console.log('[Clients] Default lead sources created');
-      }
-
-      console.log('[Clients] Fetching clients...');
-      const result = await clientsService.getAll();
-      console.log('[Clients] Got clients:', result.length, 'records');
-
-      const allClients = [...result].sort((a: any, b: any) =>
-        String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')),
-      ) as Client[];
-      console.log('Loaded clients from database:', allClients.map(c => ({ id: c.id, client_id: c.client_id, next_follow_up: c.next_follow_up })));
-      setClients(allClients);
-
-      console.log('[Clients] Fetching refreshed options...');
-      const refreshedOptions = await appOptionsService.getAll();
-      console.log('[Clients] Got refreshed options:', refreshedOptions.length, 'records');
-
-      setEventTypes(
-        refreshedOptions
-          .filter((option) => option.type === 'event_type')
-          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-      );
-      setAvailablePackages(
-        refreshedOptions
-          .filter((option) => option.type === 'package')
-          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-      );
-      const leadSourceOptions = refreshedOptions
-        .filter((option) => option.type === 'lead_source')
-        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[];
-
-      setLeadSources(
-        leadSourceOptions.length > 0
-          ? leadSourceOptions
-          : LEAD_SOURCES_DEFAULTS.map((source, index) => ({
-              id: -(index + 1),
-              type: 'lead_source',
-              label: source.label,
-              value: source.value,
-              color: source.color,
-            }))
-      );
-      setClientStatuses(
-        refreshedOptions
-          .filter((option) => option.type === 'client_status')
-          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
-      );
-
-      console.log('[Clients] Calculating statistics...');
-      let todayCount = 0;
-      let weekCount = 0;
-      let monthCount = 0;
-      const today = new Date();
-
-      allClients.forEach(client => {
-        if (client.event_date) {
-          try {
-            const date = parseISO(client.event_date);
-            if (isSameDay(date, today)) todayCount++;
-            if (isSameWeek(date, today, { weekStartsOn: 1 })) weekCount++;
-            if (isSameMonth(date, today)) monthCount++;
-          } catch (e) {}
-        }
+      const data = await fetchClientsPageData({
+        clientStatusesDefaults: CLIENT_STATUSES_DEFAULTS,
+        leadSourcesDefaults: LEAD_SOURCES_DEFAULTS,
       });
 
-      setStats({ today: todayCount, week: weekCount, month: monthCount });
+      console.log('Loaded clients from database:', data.clients.map(c => ({ id: c.id, client_id: c.client_id, next_follow_up: c.next_follow_up })));
+      setClients(data.clients as Client[]);
+      setEventTypes(data.eventTypes as AppOption[]);
+      setAvailablePackages(data.availablePackages as AppOption[]);
+      setLeadSources(data.leadSources as AppOption[]);
+      setClientStatuses(data.clientStatuses as AppOption[]);
+      setStats(data.stats);
+
       console.log('[Clients] Data load completed successfully');
     } catch (error) {
       console.error('[Clients] Error loading clients:', error);
     } finally {
+      lastLoadAtRef.current = Date.now();
+      isLoadingDataRef.current = false;
       console.log('[Clients] Setting loading to false');
       setLoading(false);
     }
@@ -455,8 +371,61 @@ export default function Clients() {
   };
 
   useEffect(() => {
-    loadData();
+    void loadData('mount', { force: true });
   }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (modalVisible) {
+        return () => {};
+      }
+      void loadData('focus');
+      return () => {};
+    }, [loadData, modalVisible])
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        if (modalVisible) {
+          return;
+        }
+        void loadData('app-active');
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [loadData, modalVisible]);
+
+  useEffect(() => {
+    const unsubscribeClients = clientsService.subscribeToClientChanges(() => {
+      if (modalVisible) {
+        return;
+      }
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData('realtime-clients', { force: true });
+      }, 250);
+    });
+
+    const unsubscribeOptions = appOptionsService.subscribeToAppOptionChanges(() => {
+      if (modalVisible) {
+        return;
+      }
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData('realtime-options', { force: true });
+      }, 250);
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribeClients();
+      unsubscribeOptions();
+    };
+  }, [loadData, modalVisible]);
 
   // Auto-open edit form if navigated from lead conversion
   useEffect(() => {
@@ -470,9 +439,11 @@ export default function Clients() {
 
   // Auto-open client form with lead data when coming from Leads convert action.
   useEffect(() => {
-    if (!fromLead || leadPrefillAppliedRef.current) return;
+    if (!fromLead) return;
+    const prefillKey = sourceLeadId ?? '__fromLead__';
+    if (lastProcessedLeadPrefillRef.current === prefillKey) return;
 
-    leadPrefillAppliedRef.current = true;
+    lastProcessedLeadPrefillRef.current = prefillKey;
     setConversionLeadId(sourceLeadId);
     setEditingClientId(null);
 
@@ -513,6 +484,15 @@ export default function Clients() {
     leadNotes,
     getNextClientId,
   ]);
+
+  useEffect(() => {
+    // Keep a stable auto-generated client ID for add/convert flows while modal is open.
+    if (!modalVisible || editingClientId) return;
+    setFormData((prev) => {
+      if (String(prev.client_id ?? '').trim()) return prev;
+      return { ...prev, client_id: getNextClientId() };
+    });
+  }, [modalVisible, editingClientId, getNextClientId, clients.length]);
 
   // Close modal and clear autoEditClientId after successful save
   useEffect(() => {
@@ -873,7 +853,8 @@ export default function Clients() {
             await clientsService.delete(String(id));
             await loadData();
           } catch (error) {
-            Alert.alert('Error', 'Failed to delete client');
+            const message = error instanceof Error ? error.message : 'Failed to delete client';
+            Alert.alert('Delete blocked', message);
           }
         }
       }
@@ -1141,7 +1122,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
         end={{ x: 1, y: 1 }}
         style={[
           styles.summaryCard,
-          { height: isTablet ? 100 : 80 },
+          { height: isTablet ? 100 : (isCompactPhone ? 68 : 80), flexBasis: summaryCardBasis, maxWidth: summaryCardBasis },
           isActive && { borderWidth: 2, borderColor: '#fff' }
         ]}
       >
@@ -1157,10 +1138,10 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           }}
         >
           <View style={{ flex: 1 }}>
-            <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count}</Text>
-            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>{displayTitle}</Text>
+            <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : (isCompactPhone ? 18 : 20) }]}>{count}</Text>
+            <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : (isCompactPhone ? 11 : 12) }]} numberOfLines={1}>{displayTitle}</Text>
             {isActive && (
-              <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : 9 }]}>{getDateDisplay()}</Text>
+              <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : (isCompactPhone ? 8 : 9) }]}>{getDateDisplay()}</Text>
             )}
           </View>
           <TouchableOpacity
@@ -1168,10 +1149,10 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
               e.stopPropagation();
               handleConfigPress(e);
             }}
-            style={[styles.summaryIconContainer, { width: isTablet ? 44 : 36, height: isTablet ? 44 : 36 }]}
+            style={[styles.summaryIconContainer, { width: isTablet ? 44 : (isCompactPhone ? 32 : 36), height: isTablet ? 44 : (isCompactPhone ? 32 : 36) }]}
             activeOpacity={0.7}
           >
-            <Ionicons name={icon} size={isTablet ? 28 : 24} color="#fff" />
+            <Ionicons name={icon} size={isTablet ? 28 : (isCompactPhone ? 20 : 24)} color="#fff" />
           </TouchableOpacity>
         </TouchableOpacity>
       </LinearGradient>
@@ -1528,7 +1509,7 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
             <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
               <View style={styles.modalHeader}>
-                <Text style={[styles.modalTitle, { color: colors.text }]}>{(editingClientId || conversionLeadId) ? 'Edit Client' : 'Add New Client'}</Text>
+                <Text style={[styles.modalTitle, { color: colors.text }]}> {(editingClientId || conversionLeadId) ? 'Edit Client' : 'Add New Client'}</Text>
                 <TouchableOpacity onPress={() => setModalVisible(false)}>
                   <Ionicons name="close" size={28} color={colors.textSecondary} />
                 </TouchableOpacity>
@@ -2234,8 +2215,8 @@ const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  summaryContainer: { flexDirection: 'row', padding: 16, gap: 12, justifyContent: 'space-between' },
-  summaryCard: { flex: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  summaryContainer: { flexDirection: 'row', padding: 16, gap: 12, justifyContent: 'space-between', flexWrap: 'wrap' },
+  summaryCard: { flexGrow: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, minWidth: 120 },
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryCount: { color: '#fff', fontWeight: '800' },
   summaryTitle: { color: 'rgba(255,255,255,0.8)', fontWeight: '600' },

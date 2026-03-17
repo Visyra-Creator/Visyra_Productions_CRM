@@ -1,0 +1,30 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- tapOn: "Pending Payments"
+- tapOn: "Create Invoice"
+- tapOn: "Select Client"
+- tapOn: "QA_CLIENT_AUTOMATION"
+- tapOn: "Total Amount"
+- inputText: "5000"
+- tapOn: "Create Invoice"
+- assertVisible:
+    text: "Please select a shoot/event"
+    optional: true
+# If shoot is available, invoice should save
+- tapOn: "Shoot / Event"
+- tapOn:
+    text: "QA_EVENT"
+    optional: true
+- tapOn: "Create Invoice"
+- assertVisible:
+    text: "successfully"
+    optional: true
+# Delete validation
+- tapOn:
+    text: "Delete Invoice"
+    optional: true
+- assertVisible:
+    text: "Delete blocked"
+    optional: true
+

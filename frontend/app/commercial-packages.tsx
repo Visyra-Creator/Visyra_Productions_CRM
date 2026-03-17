@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import * as packagesService from '../src/api/services/packages';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from '@react-navigation/native';
 
 interface Package {
   id: number;
@@ -40,9 +41,11 @@ export default function CommercialPackages() {
     deliverables: '',
     description: '',
   });
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadPackages = async () => {
+  const loadPackages = useCallback(async (reason = 'manual') => {
     try {
+      console.log(`[CommercialPackages] Loading packages (${reason})...`);
       const result = await packagesService.getAll();
       const filtered = result
         .filter((pkg) => pkg.event_type === 'Commercial')
@@ -51,11 +54,32 @@ export default function CommercialPackages() {
     } catch (error) {
       console.error('Error loading commercial packages:', error);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadPackages();
-  }, []);
+    void loadPackages('mount');
+  }, [loadPackages]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadPackages('focus');
+      return () => {};
+    }, [loadPackages])
+  );
+
+  useEffect(() => {
+    const unsubscribe = packagesService.subscribeToPackageChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadPackages('realtime');
+      }, 250);
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribe();
+    };
+  }, [loadPackages]);
 
   const handleAddPackage = async () => {
     if (!formData.name || !formData.price) {
@@ -82,7 +106,7 @@ export default function CommercialPackages() {
         deliverables: '',
         description: '',
       });
-      loadPackages();
+      await loadPackages('after-create');
       Alert.alert('Success', 'Commercial package created');
     } catch (error) {
       console.error('Error adding commercial package:', error);

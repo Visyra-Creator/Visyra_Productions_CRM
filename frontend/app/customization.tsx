@@ -78,6 +78,7 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingOption, setEditingOption] = useState<AppOption | null>(null);
   const [newOptionLabel, setNewOptionLabel] = useState('');
+  const realtimeRefreshTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fallbackForType = useCallback((): AppOption[] => {
     return (LOCAL_FALLBACK_OPTIONS[type] ?? []).map((item, index) => ({
@@ -106,9 +107,23 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
 
   useFocusEffect(
     useCallback(() => {
-      loadOptions();
+      void loadOptions();
     }, [loadOptions])
   );
+
+  useEffect(() => {
+    const unsubscribe = appOptionsService.subscribeToAppOptionChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadOptions();
+      }, 250);
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribe();
+    };
+  }, [loadOptions]);
 
   const handleSave = async () => {
     if (!newOptionLabel.trim()) {
@@ -144,7 +159,7 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
       setModalVisible(false);
       setEditingOption(null);
       setNewOptionLabel('');
-      loadOptions();
+      await loadOptions();
     } catch (error) {
       console.error('Error saving option:', error);
       Alert.alert('Error', 'Failed to save option.');
@@ -160,10 +175,11 @@ const OptionManager = ({ type, label }: { type: string; label: string }) => {
         onPress: async () => {
           try {
             await appOptionsService.delete(String(id));
-            loadOptions();
+            await loadOptions();
           } catch (error) {
             console.error('Error deleting option:', error);
-            Alert.alert('Error', 'Failed to delete option.');
+            const message = error instanceof Error ? error.message : 'Failed to delete option.';
+            Alert.alert('Delete blocked', message);
           }
         },
       },

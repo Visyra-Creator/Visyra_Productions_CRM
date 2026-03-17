@@ -1,8 +1,31 @@
 import { createClient } from "@supabase/supabase-js"
+import fs from "node:fs"
+import path from "node:path"
+
+type AppConfig = {
+  expo?: {
+    extra?: {
+      EXPO_PUBLIC_SUPABASE_URL?: string
+      EXPO_PUBLIC_SUPABASE_ANON_KEY?: string
+    }
+  }
+}
+
+const appJsonPath = path.resolve(__dirname, "../app.json")
+const appConfig = JSON.parse(fs.readFileSync(appJsonPath, "utf8")) as AppConfig
+const supabaseUrl = appConfig.expo?.extra?.EXPO_PUBLIC_SUPABASE_URL
+const supabaseKey = appConfig.expo?.extra?.EXPO_PUBLIC_SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error("Missing Supabase config")
+}
+
+console.log("Supabase URL:", supabaseUrl)
+console.log("Supabase Key exists:", !!supabaseKey)
 
 const supabase = createClient(
-  process.env.EXPO_PUBLIC_SUPABASE_URL!,
-  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!
+  supabaseUrl || "https://example.supabase.co",
+  supabaseKey || "missing-supabase-anon-key"
 )
 
 const tables = [

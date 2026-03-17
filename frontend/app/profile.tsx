@@ -16,8 +16,12 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useThemeStore } from '../src/store/themeStore';
 import { useAuthStore } from '../src/store/authStore';
-import { updateProfile } from '../src/api/services/auth';
-import { supabase } from '../src/api/supabase';
+import {
+  updateProfile,
+  getCurrentAvatarUrl,
+  updateAvatarMetadata,
+  changePasswordWithVerification,
+} from '../src/api/services/auth';
 
 export default function Profile() {
   const { colors } = useThemeStore();
@@ -42,8 +46,7 @@ export default function Profile() {
   useEffect(() => {
     const loadAvatar = async () => {
       try {
-        const { data } = await supabase.auth.getUser();
-        const avatar = (data?.user?.user_metadata?.avatar_url as string | undefined) || null;
+        const avatar = await getCurrentAvatarUrl();
         setAvatarUrl(avatar);
       } catch (error) {
         console.error('[Profile] avatar load error:', error);
@@ -106,9 +109,7 @@ export default function Profile() {
       }
 
       if (avatarUrl) {
-        const { error: metadataError } = await supabase.auth.updateUser({
-          data: { avatar_url: avatarUrl },
-        });
+        const { error: metadataError } = await updateAvatarMetadata(avatarUrl);
 
         if (metadataError) {
           Alert.alert('Warning', 'Profile saved, but photo update failed.');
@@ -144,22 +145,14 @@ export default function Profile() {
     try {
       setSaving(true);
 
-      const { error: verifyError } = await supabase.auth.signInWithPassword({
+      const { error } = await changePasswordWithVerification({
         email: user.email,
-        password: currentPassword,
+        currentPassword,
+        newPassword,
       });
 
-      if (verifyError) {
-        Alert.alert('Error', 'Current password is incorrect.');
-        return;
-      }
-
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
-
-      if (updateError) {
-        Alert.alert('Error', updateError.message || 'Failed to update password.');
+      if (error) {
+        Alert.alert('Error', error);
         return;
       }
 
@@ -348,4 +341,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-

@@ -6,8 +6,14 @@
  */
 
 import { supabase } from './supabase';
+import Constants from 'expo-constants';
 import * as clientsService from './services/clients';
 import * as leadsService from './services/leads';
+
+type ExpoExtra = {
+  EXPO_PUBLIC_SUPABASE_URL?: string;
+  EXPO_PUBLIC_SUPABASE_ANON_KEY?: string;
+};
 
 export async function testSupabaseConnection(): Promise<void> {
   console.log('\n=== Supabase Diagnostics Start ===\n');
@@ -15,8 +21,13 @@ export async function testSupabaseConnection(): Promise<void> {
   try {
     // Test 1: Check environment variables
     console.log('[Test 1] Checking environment variables...');
-    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    const extra =
+      (Constants.expoConfig?.extra as ExpoExtra | undefined) ??
+      ((Constants as any).manifest2?.extra as ExpoExtra | undefined) ??
+      {};
+
+    const supabaseUrl = extra.EXPO_PUBLIC_SUPABASE_URL;
+    const supabaseKey = extra.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
     console.log('EXPO_PUBLIC_SUPABASE_URL:', supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'MISSING');
     console.log('EXPO_PUBLIC_SUPABASE_ANON_KEY:', supabaseKey ? `${supabaseKey.substring(0, 20)}...` : 'MISSING');

@@ -15,8 +15,10 @@ import {
   Image,
   Linking,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useThemeStore } from '../src/store/themeStore';
 import * as locationsService from '../src/api/services/locations';
 import * as locationImagesService from '../src/api/services/locationImages';
@@ -91,6 +93,7 @@ export default function LocationGalleryPage() {
   const [addTypeModalVisible, setAddTypeModalVisible] = useState(false);
   const [newTypeName, setNewTypeName] = useState('');
   const [addingType, setAddingType] = useState(false);
+  const realtimeRefreshTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -106,8 +109,9 @@ export default function LocationGalleryPage() {
     images: [] as string[]
   });
 
-  const loadLocations = async () => {
+  const loadLocations = useCallback(async (reason = 'manual') => {
     try {
+      console.log(`[Locations] Loading data (${reason})...`);
       const locs = (await locationsService.getAll())
         .sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
       const allImages = await locationImagesService.getAll();
@@ -119,10 +123,6 @@ export default function LocationGalleryPage() {
     } catch (e) {
       console.error(e);
     }
-  };
-
-  useEffect(() => {
-    loadLocations();
   }, []);
 
   const loadLocationTypes = useCallback(async () => {
@@ -143,6 +143,45 @@ export default function LocationGalleryPage() {
       setLocationTypes(LOCATION_TYPES);
     }
   }, []);
+
+  useEffect(() => {
+    void loadLocations('mount');
+  }, [loadLocations]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadLocations('focus');
+      return () => {};
+    }, [loadLocations])
+  );
+
+  useEffect(() => {
+    const unsubscribeLocations = locationsService.subscribeToLocationChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadLocations('realtime-locations');
+      }, 250);
+    });
+
+    const unsubscribeImages = locationImagesService.subscribeToLocationImageChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadLocations('realtime-location-images');
+      }, 250);
+    });
+
+    const unsubscribeOptions = appOptionsService.subscribeToAppOptionChanges(() => {
+      void loadLocationTypes();
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribeLocations();
+      unsubscribeImages();
+      unsubscribeOptions();
+    };
+  }, [loadLocations, loadLocationTypes]);
+
 
   useEffect(() => {
     loadLocationTypes();
@@ -282,7 +321,7 @@ export default function LocationGalleryPage() {
         }
       }
       setEditModalVisible(false);
-      loadLocations();
+      await loadLocations();
     } catch (e) {
       console.error(e);
     }

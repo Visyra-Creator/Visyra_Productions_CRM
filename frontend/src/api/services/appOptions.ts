@@ -1,4 +1,6 @@
 import { supabase } from '../supabase';
+import { toDeleteError } from './deleteGuards';
+import { getCurrentUser, withUserScope } from './rls';
 
 const TABLE = 'app_options';
 
@@ -9,6 +11,7 @@ let localOptionsStore: AppOptionRecord[] = [];
 export type AppOptionRecord = any;
 export type AppOptionCreateInput = any;
 export type AppOptionUpdateInput = Partial<AppOptionCreateInput>;
+export type AppOptionChangeEvent = 'INSERT' | 'UPDATE' | 'DELETE';
 
 function isMissingTableError(error: any): boolean {
   const code = String(error?.code ?? '');
@@ -80,6 +83,7 @@ function normalizeOptionRow(row: any): AppOptionRecord {
 }
 
 export async function getAll(): Promise<AppOptionRecord[]> {
+  await getCurrentUser();
   const { data, error } = await supabase.from(TABLE).select('*');
   if (error) {
     if (isMissingTableError(error)) {
@@ -91,7 +95,7 @@ export async function getAll(): Promise<AppOptionRecord[]> {
       return [...localOptionsStore];
     }
     console.error('Supabase error:', error);
-    return [...localOptionsStore];
+    throw error;
   }
 
   const normalized = ((data ?? []) as any[]).map(normalizeOptionRow);
@@ -102,7 +106,9 @@ export async function getAll(): Promise<AppOptionRecord[]> {
 }
 
 export async function create(payload: AppOptionCreateInput): Promise<AppOptionRecord> {
-  const { data, error } = await supabase.from(TABLE).insert(payload).select('*').single();
+  const user = await getCurrentUser();
+  const scopedPayload = withUserScope((payload ?? {}) as Record<string, any>, user.id);
+  const { data, error } = await supabase.from(TABLE).insert(scopedPayload).select('*').single();
   if (!error) {
     const normalized = normalizeOptionRow(data);
     upsertLocalOption(normalized, String(normalized.id));
@@ -111,18 +117,19 @@ export async function create(payload: AppOptionCreateInput): Promise<AppOptionRe
 
   if (isMissingTableError(error)) {
     warnMissingTableOnce(error);
-    return upsertLocalOption(payload);
+    return upsertLocalOption(scopedPayload);
   }
 
   if (isRlsError(error)) {
     // RLS blocking insert — run backend/migrations/2026-03-17_fix_rls_app_options_and_role.sql
-    return upsertLocalOption(payload);
+    return upsertLocalOption(scopedPayload);
   }
 
   // Fallback for key/value schema: persist type + label into key.
   const fallbackPayload = {
     key: `${payload?.type ?? 'general'}:${payload?.label ?? payload?.value ?? 'option'}`,
     value: payload?.value ?? payload?.label ?? '',
+    user_id: user.id,
   };
 
   const { data: fallbackData, error: fallbackError } = await supabase
@@ -134,13 +141,13 @@ export async function create(payload: AppOptionCreateInput): Promise<AppOptionRe
   if (fallbackError) {
     if (isMissingTableError(fallbackError)) {
       warnMissingTableOnce(fallbackError);
-      return upsertLocalOption(payload);
+      return upsertLocalOption(scopedPayload);
     }
     if (isRlsError(fallbackError)) {
-      return upsertLocalOption(payload);
+      return upsertLocalOption(scopedPayload);
     }
     console.error('Supabase error:', fallbackError);
-    return upsertLocalOption(payload);
+    throw fallbackError;
   }
 
   const normalized = normalizeOptionRow(fallbackData);
@@ -169,7 +176,9 @@ export async function createIfNotExists(type: string, label: string): Promise<Ap
 }
 
 export async function update(id: string, payload: AppOptionUpdateInput): Promise<AppOptionRecord> {
-  const { data, error } = await supabase.from(TABLE).update(payload).eq('id', id).select('*').single();
+  await getCurrentUser();
+  const scopedPayload = (payload ?? {}) as Record<string, any>;
+  const { data, error } = await supabase.from(TABLE).update(scopedPayload).eq('id', id).select('*').single();
   if (!error) {
     const normalized = normalizeOptionRow(data);
     upsertLocalOption(normalized, String(normalized.id));
@@ -178,11 +187,11 @@ export async function update(id: string, payload: AppOptionUpdateInput): Promise
 
   if (isMissingTableError(error)) {
     warnMissingTableOnce(error);
-    return upsertLocalOption(payload, id);
+    return upsertLocalOption(scopedPayload, id);
   }
 
   if (isRlsError(error)) {
-    return upsertLocalOption(payload, id);
+    return upsertLocalOption(scopedPayload, id);
   }
 
   // Fallback for key/value schema: update value only when label/type columns do not exist.
@@ -199,13 +208,13 @@ export async function update(id: string, payload: AppOptionUpdateInput): Promise
   if (fallbackError) {
     if (isMissingTableError(fallbackError)) {
       warnMissingTableOnce(fallbackError);
-      return upsertLocalOption(payload, id);
+      return upsertLocalOption(scopedPayload, id);
     }
     if (isRlsError(fallbackError)) {
-      return upsertLocalOption(payload, id);
+      return upsertLocalOption(scopedPayload, id);
     }
     console.error('Supabase error:', fallbackError);
-    return upsertLocalOption(payload, id);
+    throw fallbackError;
   }
 
   const normalized = normalizeOptionRow(fallbackData);
@@ -214,6 +223,7 @@ export async function update(id: string, payload: AppOptionUpdateInput): Promise
 }
 
 async function deleteById(id: string): Promise<void> {
+  await getCurrentUser();
   const { error } = await supabase.from(TABLE).delete().eq('id', id);
   localOptionsStore = localOptionsStore.filter((item) => String(item.id) !== String(id));
   if (error) {
@@ -225,7 +235,28 @@ async function deleteById(id: string): Promise<void> {
       return;
     }
     console.error('Supabase error:', error);
+    throw toDeleteError('app option', error);
   }
+}
+
+export function subscribeToAppOptionChanges(onChange: (eventType: AppOptionChangeEvent) => void): () => void {
+  const channel = supabase
+    .channel(`${TABLE}-sync-${Math.random().toString(36).slice(2)}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: TABLE },
+      (payload) => {
+        const eventType = String(payload.eventType ?? '') as AppOptionChangeEvent;
+        if (eventType === 'INSERT' || eventType === 'UPDATE' || eventType === 'DELETE') {
+          onChange(eventType);
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
 }
 
 export { deleteById as delete };

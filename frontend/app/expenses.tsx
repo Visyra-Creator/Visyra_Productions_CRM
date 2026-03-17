@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
   Dimensions,
   useWindowDimensions,
   ActivityIndicator,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
@@ -25,6 +26,7 @@ import * as paymentRecordsService from '../src/api/services/paymentRecords';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, startOfMonth, endOfMonth, isWithinInterval, startOfYear, endOfYear } from 'date-fns';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../src/store/authStore';
 
 interface AppOption {
@@ -54,21 +56,12 @@ const EXPENSE_STATUSES_DEFAULTS = [
 export default function Expenses() {
   const { colors } = useThemeStore();
   const { width: screenWidth } = useWindowDimensions();
+  const isTablet = screenWidth > 768;
+  const summaryCardBasis = isTablet ? '31%' : (screenWidth < 390 ? '48%' : '31%');
   const router = useRouter();
   const { role } = useAuthStore();
 
-  // ── Role Guard ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (role !== null && role !== 'admin') {
-      router.replace('/');
-    }
-  }, [role, router]);
-
-  if (role !== null && role !== 'admin') {
-    return null;
-  }
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // Define all state FIRST (before any conditional checks)
   const [expenses, setExpenses] = useState<any[]>([]);
   const [shoots, setShoots] = useState<any[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<AppOption[]>([]);
@@ -80,6 +73,9 @@ export default function Expenses() {
   const [calcDisplay, setCalcDisplay] = useState('0');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingExpense, setEditingExpense] = useState<any | null>(null);
+  const isLoadingDataRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // auto-generate next expense_id based on existing expenses
   // new format: E followed by four digits (e.g. E0001)
@@ -122,8 +118,20 @@ export default function Expenses() {
     shoot_id: null as number | null,
   });
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (reason: string, opts?: { force?: boolean }) => {
+    const now = Date.now();
+    if (isLoadingDataRef.current) {
+      console.log(`[Expenses] Skipping ${reason}; fetch already in progress.`);
+      return;
+    }
+    if (!opts?.force && now - lastLoadAtRef.current < 500) {
+      console.log(`[Expenses] Skipping ${reason}; throttled.`);
+      return;
+    }
+
+    isLoadingDataRef.current = true;
     try {
+      console.log(`[Expenses] Loading data (${reason})...`);
       // Seed default expense categories if they don't exist
       const allOptions = await appOptionsService.getAll();
       const existingCats = allOptions.filter((option) => option.type === 'expense_category');
@@ -141,10 +149,12 @@ export default function Expenses() {
         }
       }
 
-      const [expResult, shootResult, refreshedOptions] = await Promise.all([
+      const [expResult, shootResult, refreshedOptions, invResult, prResult] = await Promise.all([
         expensesService.getAll(),
         shootsService.getAll(),
         appOptionsService.getAll(),
+        paymentsService.getAll(),
+        paymentRecordsService.getAll(),
       ]);
 
       const shootsById = new Map(shootResult.map((shoot: any) => [String(shoot.id), shoot]));
@@ -172,20 +182,67 @@ export default function Expenses() {
           .filter((option) => option.type === 'expense_status')
           .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
       );
+      setInvoices(invResult as any[]);
+      setPaymentRecords(prResult as any[]);
 
       const methodOptions = refreshedOptions.filter((option) => option.type === 'payment_method') as AppOption[];
-      if (methodOptions.length > 0 && !formData.payment_method) {
-        setFormData(prev => ({ ...prev, payment_method: methodOptions[0].label }));
+      if (methodOptions.length > 0) {
+        setFormData(prev => (prev.payment_method ? prev : { ...prev, payment_method: methodOptions[0].label }));
       }
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
+      lastLoadAtRef.current = Date.now();
+      isLoadingDataRef.current = false;
       setLoading(false);
     }
-  }, [formData.payment_method]);
+  }, []);
 
   useEffect(() => {
-    loadData();
+    void loadData('mount', { force: true });
+  }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadData('focus');
+      return () => {};
+    }, [loadData])
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void loadData('app-active');
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [loadData]);
+
+  useEffect(() => {
+    const scheduleRefresh = (reason: string) => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData(reason, { force: true });
+      }, 250);
+    };
+
+    const unsubscribeExpenses = expensesService.subscribeToExpenseChanges(() => scheduleRefresh('realtime-expenses'));
+    const unsubscribePayments = paymentsService.subscribeToPaymentChanges(() => scheduleRefresh('realtime-payments'));
+    const unsubscribePaymentRecords = paymentRecordsService.subscribeToPaymentRecordChanges(() => scheduleRefresh('realtime-payment-records'));
+    const unsubscribeShoots = shootsService.subscribeToShootChanges(() => scheduleRefresh('realtime-shoots'));
+    const unsubscribeOptions = appOptionsService.subscribeToAppOptionChanges(() => scheduleRefresh('realtime-options'));
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribeExpenses();
+      unsubscribePayments();
+      unsubscribePaymentRecords();
+      unsubscribeShoots();
+      unsubscribeOptions();
+    };
   }, [loadData]);
 
   const filteredExpenses = useMemo(() => {
@@ -201,23 +258,6 @@ export default function Expenses() {
 
   const [invoices, setInvoices] = useState<any[]>([]);
   const [paymentRecords, setPaymentRecords] = useState<any[]>([]);
-
-  const loadPaymentsData = useCallback(async () => {
-    try {
-      const [invResult, prResult] = await Promise.all([
-        paymentsService.getAll(),
-        paymentRecordsService.getAll(),
-      ]);
-      setInvoices(invResult as any[]);
-      setPaymentRecords(prResult as any[]);
-    } catch (error) {
-      console.error('Error loading payments data:', error);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadPaymentsData();
-  }, [loadPaymentsData]);
 
   const stats = useMemo(() => {
     const now = new Date();
@@ -295,7 +335,7 @@ export default function Expenses() {
 
       setIsModalVisible(false);
       resetForm();
-      loadData();
+      await loadData('after-save-expense', { force: true });
     } catch (error) {
       console.error('Error saving expense:', error);
       Alert.alert('Error', 'Failed to save expense');
@@ -345,8 +385,6 @@ export default function Expenses() {
   };
 
   const SummaryCard = ({ title, count, icon, gradient, type }: any) => {
-    const isTablet = screenWidth > 768;
-    
     return (
       <LinearGradient
         colors={gradient}
@@ -354,7 +392,7 @@ export default function Expenses() {
         end={{ x: 1, y: 1 }}
         style={[
           styles.summaryCard,
-          { height: isTablet ? 100 : 80 }
+          { height: isTablet ? 100 : 80, flexBasis: summaryCardBasis, maxWidth: summaryCardBasis }
         ]}
       >
         <View style={styles.summaryContent}>
@@ -410,9 +448,10 @@ export default function Expenses() {
         onPress: async () => {
           try {
             await expensesService.delete(String(expenseId));
-            loadData();
+              await loadData('after-delete-expense', { force: true });
           } catch (error) {
-            Alert.alert('Error', 'Failed to delete expense');
+              const message = error instanceof Error ? error.message : 'Failed to delete expense';
+              Alert.alert('Delete blocked', message);
           }
         }
       }
@@ -541,6 +580,18 @@ export default function Expenses() {
       <Text style={[styles.col, styles.colNotes, { color: colors.textTertiary, textAlign: 'center' }]}>{item.notes || '-'}</Text>
     </View>
   );
+
+  // ── Role Guard ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (role !== null && role !== 'admin') {
+      router.replace('/');
+    }
+  }, [role, router]);
+
+  if (role !== null && role !== 'admin') {
+    return null;
+  }
+  // ───────────────────────────────────────────────────────────────────────────
 
   if (loading && expenses.length === 0) {
     return (
@@ -781,8 +832,8 @@ export default function Expenses() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  statsContainer: { flexDirection: 'row', paddingHorizontal: 10, gap: 6, marginTop: 10, justifyContent: 'space-between' },
-  summaryCard: { flex: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4 },
+  statsContainer: { flexDirection: 'row', paddingHorizontal: 10, gap: 6, marginTop: 10, justifyContent: 'space-between', flexWrap: 'wrap' },
+  summaryCard: { flexGrow: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, minWidth: 120 },
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryCount: { color: '#fff', fontWeight: '800' },
   summaryTitle: { color: 'rgba(255,255,255,0.8)', fontWeight: '600' },

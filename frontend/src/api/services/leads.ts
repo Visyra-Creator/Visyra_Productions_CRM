@@ -1,5 +1,7 @@
 import { supabase } from '../supabase';
 import { safeQuery } from '../../utils/safeQuery';
+import { toDeleteError } from './deleteGuards';
+import { getCurrentUser, withUserScope } from './rls';
 
 const TABLE = 'leads';
 
@@ -20,31 +22,38 @@ async function executeWithMissingColumnRetries(
 
   for (let attempt = 0; attempt < 10; attempt++) {
     const { data, error } = await runner(sanitizedPayload);
-    if (!error) return (data ?? null) as LeadRecord;
+    if (!error) {
+      console.log(`[${TABLE}] ${mode} succeeded`, { removedColumns: [...removedColumns] });
+      return (data ?? null) as LeadRecord;
+    }
 
     const missingColumn = extractMissingColumn(error);
     if (!missingColumn || !(missingColumn in sanitizedPayload)) {
-      console.error('Supabase query failed:', error);
-      return null as LeadRecord;
+      console.error(`[${TABLE}] ${mode} failed:`, error);
+      throw error;
     }
 
+    console.warn(`[${TABLE}] Missing column '${missingColumn}'. Retrying ${mode} with sanitized payload.`);
     removedColumns.add(missingColumn);
     delete sanitizedPayload[missingColumn];
   }
 
-  console.error(`[${TABLE}] ${mode} failed after retrying missing-column fixes. Removed columns:`, [...removedColumns]);
-  return null as LeadRecord;
+  const retryError = new Error(`[${TABLE}] ${mode} failed after retrying missing-column fixes.`);
+  console.error(retryError.message, { removedColumns: [...removedColumns] });
+  throw retryError;
 }
 
 async function createWithFallback(payload: LeadCreateInput): Promise<LeadRecord> {
+  const user = await getCurrentUser();
   return executeWithMissingColumnRetries(
-    (payload ?? {}) as Record<string, any>,
+    withUserScope((payload ?? {}) as Record<string, any>, user.id),
     (nextPayload) => supabase.from(TABLE).insert(nextPayload).select('*').single(),
     'insert'
   );
 }
 
 async function updateWithFallback(id: string, payload: LeadUpdateInput): Promise<LeadRecord> {
+  await getCurrentUser();
   return executeWithMissingColumnRetries(
     (payload ?? {}) as Record<string, any>,
     (nextPayload) => supabase.from(TABLE).update(nextPayload).eq('id', id).select('*').single(),
@@ -57,10 +66,13 @@ export type LeadCreateInput = any;
 export type LeadUpdateInput = Partial<LeadCreateInput>;
 
 export async function getAll(): Promise<LeadRecord[]> {
-  return (await safeQuery(
+  await getCurrentUser();
+  const rows = (await safeQuery(
     supabase.from(TABLE).select('*'),
     []
   )) as LeadRecord[];
+  console.log(`[${TABLE}] getAll rows:`, Array.isArray(rows) ? rows.length : 0);
+  return rows;
 }
 
 export async function create(payload: LeadCreateInput): Promise<LeadRecord> {
@@ -72,11 +84,52 @@ export async function update(id: string, payload: LeadUpdateInput): Promise<Lead
 }
 
 async function deleteById(id: string): Promise<void> {
-  await safeQuery(
-    supabase.from(TABLE).delete().eq('id', id),
-    null
-  );
+  await getCurrentUser();
+  const { error } = await supabase.from(TABLE).delete().eq('id', id);
+  if (error) {
+    console.error(`[${TABLE}] delete failed:`, error);
+    throw toDeleteError('lead', error);
+  }
+  console.log(`[${TABLE}] delete succeeded`, { id });
+}
+
+export type LeadChangeEvent = 'INSERT' | 'UPDATE' | 'DELETE';
+export type LeadRealtimeStatus = 'connected' | 'disconnected';
+
+export function subscribeToLeadChanges(
+  onChange: (eventType: LeadChangeEvent) => void,
+  onStatusChange?: (status: LeadRealtimeStatus) => void
+): () => void {
+  const channelName = `${TABLE}-sync-${Math.random().toString(36).slice(2)}`;
+  const channel = supabase
+    .channel(channelName)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: TABLE },
+      (payload) => {
+        const eventType = String(payload.eventType ?? '') as LeadChangeEvent;
+        console.log(`[${TABLE}] realtime event:`, eventType);
+        if (eventType === 'INSERT' || eventType === 'UPDATE' || eventType === 'DELETE') {
+          onChange(eventType);
+        }
+      }
+    )
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        onStatusChange?.('connected');
+        console.log(`[${TABLE}] realtime subscribed`, { channelName });
+        return;
+      }
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        onStatusChange?.('disconnected');
+        console.warn(`[${TABLE}] realtime status: ${status}`, err ?? null);
+      }
+    });
+
+  return () => {
+    onStatusChange?.('disconnected');
+    supabase.removeChannel(channel);
+  };
 }
 
 export { deleteById as delete };
-

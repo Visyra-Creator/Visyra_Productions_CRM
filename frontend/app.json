@@ -35,6 +35,9 @@
       "@react-native-community/datetimepicker"
     ],
     "extra": {
+      "EXPO_PUBLIC_SUPABASE_URL": "https://jdtcxwmqtwkylgbdibqz.supabase.co",
+      "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_TUoW0mkpNaZqlAC5ZBCqsQ_PwhGQyKO",
+      "EXPO_PUBLIC_BACKEND_URL": "https://photo-admin-hub-3.preview.emergentagent.com",
       "router": {},
       "eas": {
         "projectId": "ae609f3e-9301-41ef-8ff6-84ea882c4c57"

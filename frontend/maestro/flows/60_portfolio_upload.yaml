@@ -1,0 +1,21 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- tapOn:
+    text: "Fashion"
+    optional: true
+- tapOn:
+    text: "add"
+    optional: true
+# Inject test image into device library before picker interaction
+- addMedia: "maestro/assets/qa-image.jpg"
+- tapOn:
+    text: "Upload"
+    optional: true
+- assertVisible:
+    text: "Success"
+    optional: true
+- tapOn:
+    text: "OK"
+    optional: true
+

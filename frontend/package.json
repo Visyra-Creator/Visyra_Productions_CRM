@@ -8,7 +8,10 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "e2e:maestro": "maestro test maestro/flows",
+    "e2e:maestro:smoke": "maestro test maestro/flows/00_smoke_navigation.yaml",
+    "e2e:maestro:critical": "maestro test maestro/flows/10_leads_crud.yaml maestro/flows/20_clients_create_and_delete_guard.yaml maestro/flows/30_shoots_client_relationship.yaml maestro/flows/40_payments_invoice_and_fk.yaml"
   },
   "dependencies": {
     "@babel/runtime": "^7.20.6",

@@ -1,0 +1,17 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- assertVisible: "Overview"
+- assertVisible: "Total Leads"
+- tapOn: "Total Leads"
+- assertVisible: "Add Lead"
+- back
+- tapOn: "Total Clients"
+- assertVisible: "Add Client"
+- back
+- tapOn: "Pending Payments"
+- assertVisible: "Create Invoice"
+- back
+- tapOn: "Monthly Expenses"
+- assertVisible: "Total Expenses"
+

@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Stack, useRouter, useSegments, usePathname } from 'expo-router';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable, Platform, ActivityIndicator, useWindowDimensions, Animated, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,8 +7,11 @@ import { Image } from 'expo-image';
 import { useThemeStore } from '../src/store/themeStore';
 import { useMenuStore } from '../src/store/menuStore';
 import { useAuthStore } from '../src/store/authStore';
-import { updateProfile } from '../src/api/services/auth';
-import { supabase } from '../src/api/supabase';
+import {
+  updateProfile,
+  getCurrentAvatarUrl,
+  changePasswordWithVerification,
+} from '../src/api/services/auth';
 import WebNotice from './web-notice';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
@@ -56,18 +59,23 @@ function RootLayoutNav() {
   useEffect(() => {
     const loadAvatar = async () => {
       try {
-        const { data } = await supabase.auth.getUser();
-        const avatar = (data?.user?.user_metadata?.avatar_url as string | undefined) || null;
+        const avatar = await getCurrentAvatarUrl();
         setAvatarUrl(avatar);
       } catch (error) {
         console.error('[layout] avatar load failed:', error);
       }
     };
 
-    loadAvatar();
-  }, [segments, user?.id]);
+    // Skip avatar reload if edit modal is open (prevents form flicker)
+    if (editModalVisible) {
+      console.log('[Layout] Edit modal open, skipping avatar reload');
+      return;
+    }
 
-  const openEditDetails = () => {
+    loadAvatar();
+  }, [segments, user?.id, editModalVisible]);
+
+  const openEditDetails = useCallback(() => {
     setProfileDropdownVisible(false);
     setName(user?.name ?? '');
     setPhone(user?.phone ?? '');
@@ -76,17 +84,17 @@ function RootLayoutNav() {
     setNewPassword('');
     setConfirmNewPassword('');
     setEditModalVisible(true);
-  };
+  }, [user?.name, user?.phone, user?.email]);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     setProfileDropdownVisible(false);
     await logout();
     router.replace('/auth/login');
-  };
+  }, [logout, router]);
 
-  const handleProfileIconPress = () => {
+  const handleProfileIconPress = useCallback(() => {
     setProfileDropdownVisible((prev) => !prev);
-  };
+  }, []);
 
   const handleSaveDetails = async () => {
     if (!user) return;
@@ -124,24 +132,14 @@ function RootLayoutNav() {
           return;
         }
 
-        // Verify current password by re-authenticating
-        const { error: verifyError } = await supabase.auth.signInWithPassword({
+        const { error } = await changePasswordWithVerification({
           email: user.email,
-          password: currentPassword,
+          currentPassword,
+          newPassword,
         });
 
-        if (verifyError) {
-          Alert.alert('Password Error', 'Current password is incorrect.');
-          return;
-        }
-
-        // Update password in Supabase Auth
-        const { error: updatePasswordError } = await supabase.auth.updateUser({
-          password: newPassword,
-        });
-
-        if (updatePasswordError) {
-          Alert.alert('Password Error', updatePasswordError.message);
+        if (error) {
+          Alert.alert('Password Error', error);
           return;
         }
       }
@@ -216,7 +214,7 @@ function RootLayoutNav() {
     </Modal>
   );
 
-  const ProfileDropdown = () => (
+  const ProfileDropdown = useMemo(() => (
     <Modal
       transparent
       animationType="fade"
@@ -245,9 +243,17 @@ function RootLayoutNav() {
         </View>
       </View>
     </Modal>
-  );
+  ), [
+    profileDropdownVisible,
+    colors.surface,
+    colors.border,
+    colors.text,
+    colors.error,
+    openEditDetails,
+    handleLogout,
+  ]);
 
-  const EditDetailsModal = () => (
+  const EditDetailsModal = useMemo(() => (
     <Modal
       transparent
       animationType="slide"
@@ -346,14 +352,37 @@ function RootLayoutNav() {
               {savingProfile ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.saveButtonText}>Save Changes</Text>
+                <Text style={styles.saveButtonText}>Save All Changes</Text>
               )}
             </TouchableOpacity>
           </ScrollView>
         </View>
       </View>
     </Modal>
-  );
+  ), [
+    editModalVisible,
+    colors.background,
+    colors.border,
+    colors.text,
+    colors.textSecondary,
+    colors.textTertiary,
+    colors.surface,
+    colors.primary,
+    name,
+    phone,
+    email,
+    currentPassword,
+    newPassword,
+    confirmNewPassword,
+    savingProfile,
+    handleSaveDetails,
+    setName,
+    setPhone,
+    setCurrentPassword,
+    setNewPassword,
+    setConfirmNewPassword,
+    setEditModalVisible,
+  ]);
 
   return (
     <SafeAreaProvider>
@@ -462,8 +491,8 @@ function RootLayoutNav() {
           <Stack.Screen name="customization"     options={{ title: 'Customization' }} />
         </Stack>
         <SideMenu />
-        <ProfileDropdown />
-        <EditDetailsModal />
+        {ProfileDropdown}
+        {EditDetailsModal}
       </View>
     </SafeAreaProvider>
   );

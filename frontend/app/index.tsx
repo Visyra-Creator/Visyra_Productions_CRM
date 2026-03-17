@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeStore } from '../src/store/themeStore';
 import { useAuthStore } from '../src/store/authStore';
+import { fetchDashboardData, type DashboardPortfolioImage, type DashboardStats, type DashboardTimelineItem } from '../src/api/services/dashboard';
+import { format } from 'date-fns';
+import { Image } from 'expo-image';
+import { getCurrentAvatarUrl } from '../src/api/services/auth';
 import * as shootsService from '../src/api/services/shoots';
 import * as leadsService from '../src/api/services/leads';
 import * as clientsService from '../src/api/services/clients';
@@ -23,40 +27,47 @@ import * as paymentsService from '../src/api/services/payments';
 import * as paymentRecordsService from '../src/api/services/paymentRecords';
 import * as expensesService from '../src/api/services/expenses';
 import * as portfolioService from '../src/api/services/portfolio';
-import { format } from 'date-fns';
-import { Image } from 'expo-image';
-import { supabase } from '../src/api/supabase';
 
-interface TimelineItem {
-  id: string | number;
-  type: 'shoot' | 'payment' | 'lead' | 'client';
-  title: string;
-  subtitle: string;
-  date: Date;
-  status?: string;
-}
-
-interface PortfolioImage {
-  id: string | number;
-  image_path: string;
-  portfolio_title: string;
-  category: string;
-}
+interface TimelineItem extends DashboardTimelineItem {}
+interface PortfolioImage extends DashboardPortfolioImage {}
 
 export default function Dashboard() {
   const router = useRouter();
   const { colors } = useThemeStore();
-  const { role } = useAuthStore();
+  const { role, user, loading: authLoading } = useAuthStore();
   const { width: windowWidth } = useWindowDimensions();
   const isTablet = windowWidth > 768;
+  const isPhone = !isTablet;
+  const isCompactPhone = windowWidth < 390;
+  const overdueCardBasis = isTablet ? '23%' : (isCompactPhone ? '100%' : '48%');
+  const overdueOuterHeight = isTablet ? 240 : (isCompactPhone ? 168 : 200);
+  const overdueInnerHeight = isTablet ? 200 : (isCompactPhone ? 140 : 160);
+  const overdueIconSize = isTablet ? 24 : (isCompactPhone ? 20 : 24);
+  const overdueTitleFontSize = isTablet ? 15 : (isCompactPhone ? 13 : 15);
+  const overdueCountFontSize = isTablet ? 13 : (isCompactPhone ? 11 : 13);
+  const timelinePanelHeight = isTablet ? 240 : (isCompactPhone ? 210 : 240);
+  const timelineCardHeight = isTablet ? 240 : (isCompactPhone ? 200 : 240);
+  const timelineCardIconSize = isTablet ? 20 : (isCompactPhone ? 18 : 20);
+  const timelineTitleSize = isTablet ? 15 : (isCompactPhone ? 13 : 15);
+  const timelineClientSize = isTablet ? 13 : (isCompactPhone ? 12 : 13);
+  const timelineMetaSize = isTablet ? 11 : (isCompactPhone ? 10 : 11);
 
   const [refreshing, setRefreshing] = useState(false);
-  const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [todayCardWidth, setTodayCardWidth] = useState(0);
-  const [followUpCardWidth, setFollowUpCardWidth] = useState(0);
 
-  const [stats, setStats] = useState({
+  // Shared card width for Shoots/Leads/Clients/Payments timelines.
+  // Phone: near full width; Tablet/Desktop: clamped to stable readable width.
+  const horizontalCardWidth = isPhone
+    ? Math.max(windowWidth - 56, 280)
+    : Math.min(Math.max(windowWidth * 0.42, 360), 520);
+  // Keep phone full-width; increase second frame width further on large screens.
+  const timelineSecondFrameWidth = isPhone
+    ? '100%'
+    : windowWidth >= 1200
+      ? Math.min(Math.max(windowWidth * 0.48, 500), 700)
+      : Math.min(Math.max(windowWidth * 0.44, 380), 560);
+
+  const [stats, setStats] = useState<DashboardStats>({
     upcomingShoots: 0,
     totalLeads: 0,
     totalClients: 0,
@@ -77,13 +88,14 @@ export default function Dashboard() {
   const [timelineData, setTimelineData] = useState<TimelineItem[]>([]);
   const [recentPortfolio, setRecentPortfolio] = useState<PortfolioImage[]>([]);
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | null>(null);
+  const isLoadingDataRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadingRef = useRef(false);
 
   const loadProfileAvatar = useCallback(async () => {
     try {
-      const { data } = await supabase.auth.getUser();
-      const avatar = (data?.user?.user_metadata?.avatar_url as string | undefined) || null;
+      const avatar = await getCurrentAvatarUrl();
       setProfileAvatarUrl(avatar);
     } catch (error) {
       console.error('[Dashboard] Failed to load profile avatar:', error);
@@ -112,199 +124,96 @@ export default function Dashboard() {
     }, [loadProfileAvatar])
   );
 
-  const loadData = async () => {
+  const loadData = useCallback(async (reason = 'manual', opts?: { force?: boolean }) => {
+    if (authLoading) {
+      console.log(`[Dashboard] Skipping ${reason}; auth state is still loading.`);
+      return;
+    }
+
+    if (!user?.id) {
+      console.log(`[Dashboard] Skipping ${reason}; no authenticated user.`);
+      setLoading(false);
+      return;
+    }
+
+    const now = Date.now();
+    if (isLoadingDataRef.current) {
+      console.log(`[Dashboard] Skipping ${reason}; fetch already in progress.`);
+      return;
+    }
+    if (!opts?.force && now - lastLoadAtRef.current < 500) {
+      console.log(`[Dashboard] Skipping ${reason}; throttled.`);
+      return;
+    }
+
+    isLoadingDataRef.current = true;
     setLoading(true);
 
     try {
-      console.log('[Dashboard] Starting data load...');
-      setDbReady(true);
+      console.log(`[Dashboard] Starting data load (${reason})...`);
+      const data = await fetchDashboardData();
 
-      const now = new Date();
-      const todayStr = format(now, 'yyyy-MM-dd');
-      const monthPrefix = format(now, 'yyyy-MM');
+      setStats(data.stats);
+      setTimelineData(data.timelineData);
+      setRecentPortfolio(data.recentPortfolio);
 
-      console.log('[Dashboard] Fetching data from Supabase...');
-      const [shoots, leads, clients, payments, paymentRecords, expenses, portfolio] = await Promise.all([
-        shootsService.getAll(),
-        leadsService.getAll(),
-        clientsService.getAll(),
-        paymentsService.getAll(),
-        paymentRecordsService.getAll(),
-        expensesService.getAll(),
-        portfolioService.getAll(),
-      ]);
-
-      console.log('[Dashboard] Supabase data received:', {
-        shoots: shoots.length,
-        leads: leads.length,
-        clients: clients.length,
-        payments: payments.length,
-        paymentRecords: paymentRecords.length,
-        expenses: expenses.length,
-        portfolio: portfolio.length,
-      });
-
-      const clientsById = new Map(clients.map((c: any) => [String(c.id), c]));
-      const withClientName = (row: any) => ({ ...row, client_name: clientsById.get(String(row.client_id))?.name ?? null });
-
-      const todayShoots = shoots.filter((s: any) => s.shoot_date === todayStr).map(withClientName);
-      const overdueShoots = [...shoots]
-        .filter((s: any) => s.shoot_date && s.shoot_date < todayStr && s.status !== 'completed')
-        .sort((a: any, b: any) => String(b.shoot_date).localeCompare(String(a.shoot_date)))
-        .slice(0, 4)
-        .map(withClientName);
-
-      const todayFollowUps = leads.filter((l: any) => l.next_follow_up === todayStr);
-      const overdueLeads = [...leads]
-        .filter((l: any) => l.next_follow_up && l.next_follow_up < todayStr)
-        .sort((a: any, b: any) => String(b.next_follow_up).localeCompare(String(a.next_follow_up)))
-        .slice(0, 4);
-
-      const todayClientFollowUps = clients.filter((c: any) => c.next_follow_up === todayStr).map((c: any) => ({ ...c, client_name: c.name }));
-      const overdueClientFollowUps = [...clients]
-        .filter((c: any) => c.next_follow_up && c.next_follow_up < todayStr)
-        .sort((a: any, b: any) => String(b.next_follow_up).localeCompare(String(a.next_follow_up)))
-        .slice(0, 4)
-        .map((c: any) => ({ ...c, client_name: c.name }));
-
-      const todayPayments = payments.filter((p: any) => p.payment_date === todayStr && p.status !== 'paid').map(withClientName);
-      const overduePayments = [...payments]
-        .filter((p: any) => p.payment_date && p.payment_date < todayStr && p.status !== 'paid')
-        .sort((a: any, b: any) => String(b.payment_date).localeCompare(String(a.payment_date)))
-        .slice(0, 4)
-        .map(withClientName);
-
-      const pendingPayments = payments.filter((p: any) => ['pending', 'partial'].includes(String(p.status)));
-      const outstandingBalance = pendingPayments.reduce((sum: number, p: any) => sum + Number(p.balance || 0), 0);
-      const monthlyRevenue = paymentRecords
-        .filter((r: any) => String(r.payment_date || '').startsWith(monthPrefix))
-        .reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0);
-      const totalExpenses = expenses
-        .filter((e: any) => String(e.date || '').startsWith(monthPrefix))
-        .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
-
-      console.log('[Dashboard] Processed stats:', {
-        totalClients: clients.length,
-        totalLeads: leads.length,
-        totalShoots: shoots.length,
-        monthlyRevenue,
-        totalExpenses,
-      });
-
-      setStats({
-        upcomingShoots: shoots.filter((s: any) => s.status === 'upcoming').length,
-        totalLeads: leads.length,
-        totalClients: clients.length,
-        pendingPayments: pendingPayments.length,
-        outstandingBalance,
-        monthlyRevenue,
-        totalExpenses,
-        monthlyProfit: monthlyRevenue - totalExpenses,
-        todaysShoots: todayShoots,
-        todaysFollowUps: todayFollowUps,
-        todaysClientFollowUps: todayClientFollowUps,
-        todaysPayments: todayPayments,
-        overdueShoots,
-        overdueLeads,
-        overdueClientFollowUps,
-        overduePayments,
-      });
-
-      const timeline: TimelineItem[] = [];
-
-      [...shoots]
-        .filter((s: any) => s.shoot_date && s.shoot_date >= todayStr)
-        .sort((a: any, b: any) => String(a.shoot_date).localeCompare(String(b.shoot_date)))
-        .slice(0, 10)
-        .forEach((s: any) => {
-          timeline.push({
-            id: s.id,
-            type: 'shoot',
-            title: `${s.event_type || 'Photoshoot'} - ${clientsById.get(String(s.client_id))?.name || '-'}`,
-            subtitle: s.location || 'Location TBD',
-            date: new Date(s.shoot_date),
-            status: s.status,
-          });
-        });
-
-      [...payments]
-        .filter((p: any) => p.status !== 'paid' && p.payment_date && p.payment_date >= todayStr)
-        .sort((a: any, b: any) => String(a.payment_date).localeCompare(String(b.payment_date)))
-        .slice(0, 5)
-        .forEach((p: any) => {
-          timeline.push({
-            id: p.id,
-            type: 'payment',
-            title: `Payment Due - ${clientsById.get(String(p.client_id))?.name || '-'}`,
-            subtitle: `Amount: Rs${Number(p.total_amount || 0).toLocaleString()}`,
-            date: new Date(p.payment_date),
-            status: p.status,
-          });
-        });
-
-      [...leads]
-        .filter((l: any) => l.next_follow_up && l.next_follow_up >= todayStr)
-        .sort((a: any, b: any) => String(a.next_follow_up).localeCompare(String(b.next_follow_up)))
-        .slice(0, 10)
-        .forEach((l: any) => {
-          timeline.push({
-            id: l.id,
-            type: 'lead',
-            title: `Follow Up - ${l.name}`,
-            subtitle: l.notes || 'No notes',
-            date: new Date(l.next_follow_up),
-            status: 'pending',
-          });
-        });
-
-      [...clients]
-        .filter((c: any) => c.next_follow_up && c.next_follow_up >= todayStr)
-        .sort((a: any, b: any) => String(a.next_follow_up).localeCompare(String(b.next_follow_up)))
-        .slice(0, 10)
-        .forEach((c: any) => {
-          timeline.push({
-            id: c.id,
-            type: 'client',
-            title: `Client Follow Up - ${c.name}`,
-            subtitle: c.event_type || 'Client',
-            date: new Date(c.next_follow_up),
-            status: 'pending',
-          });
-        });
-
-      setTimelineData(timeline.sort((a, b) => a.date.getTime() - b.date.getTime()));
-
-      const recentImages = [...portfolio]
-        .filter((p: any) => p.media_type === 'image')
-        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
-        .slice(0, 5)
-        .map((p: any) => ({
-          id: p.id,
-          image_path: p.file_path,
-          portfolio_title: p.title,
-          category: p.category,
-        }));
-
-      setRecentPortfolio(recentImages as PortfolioImage[]);
       console.log('[Dashboard] Data load completed successfully');
     } catch (error) {
       console.error('[Dashboard] Error loading dashboard data:', error);
-      setDbReady(false);
     } finally {
+      lastLoadAtRef.current = Date.now();
+      isLoadingDataRef.current = false;
       console.log('[Dashboard] Releasing loading lock');
       setLoading(false);
     }
-  };
+  }, [authLoading, user?.id]);
 
   useFocusEffect(
     useCallback(() => {
-      loadData();
-    }, [])
+      if (authLoading || !user?.id) {
+        return () => {};
+      }
+      void loadData('focus');
+      return () => {};
+    }, [authLoading, user?.id, loadData])
   );
+
+  useEffect(() => {
+    if (!user?.id) {
+      setLoading(false);
+      return () => {};
+    }
+
+    const scheduleRefresh = (reason: string) => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData(reason, { force: true });
+      }, 250);
+    };
+
+    const unsubShoots = shootsService.subscribeToShootChanges(() => scheduleRefresh('realtime-shoots'));
+    const unsubLeads = leadsService.subscribeToLeadChanges(() => scheduleRefresh('realtime-leads'));
+    const unsubClients = clientsService.subscribeToClientChanges(() => scheduleRefresh('realtime-clients'));
+    const unsubPayments = paymentsService.subscribeToPaymentChanges(() => scheduleRefresh('realtime-payments'));
+    const unsubPaymentRecords = paymentRecordsService.subscribeToPaymentRecordChanges(() => scheduleRefresh('realtime-payment-records'));
+    const unsubExpenses = expensesService.subscribeToExpenseChanges(() => scheduleRefresh('realtime-expenses'));
+    const unsubPortfolio = portfolioService.subscribeToPortfolioChanges(() => scheduleRefresh('realtime-portfolio'));
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubShoots();
+      unsubLeads();
+      unsubClients();
+      unsubPayments();
+      unsubPaymentRecords();
+      unsubExpenses();
+      unsubPortfolio();
+    };
+  }, [user?.id, loadData]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadData();
+    await loadData('pull-to-refresh', { force: true });
     setRefreshing(false);
   };
 
@@ -578,25 +487,19 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.timelineSplitRow}>
+            <View style={[styles.timelineSplitRow, isPhone && { flexDirection: 'column' }]}>
               <View
-                style={{ flex: 1, height: 240 }}
-                onLayout={(e) => setTodayCardWidth(e.nativeEvent.layout.width)}
+                style={{ flex: isPhone ? 1 : 0, minHeight: timelinePanelHeight, width: isPhone ? '100%' : horizontalCardWidth }}
               >
                 {stats.todaysShoots.length > 0 ? (
                   <View style={{ flex: 1 }}>
-                    {/* Fixed Number Display Badge */}
-                    <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.primary }]}>
-                      <Text style={styles.shootCountText}>{stats.todaysShoots.length}</Text>
-                    </View>
-
                     <ScrollView
                       horizontal
                       pagingEnabled
                       showsHorizontalScrollIndicator={false}
-                      style={{ flex: 1 }}
+                      style={{ flex: 1, flexGrow: 1 }}
                     >
-                      {stats.todaysShoots.map((shoot: any) => (
+                      {stats.todaysShoots.map((shoot: any, index: number) => (
                         <TouchableOpacity
                           key={shoot.id}
                           style={[
@@ -604,37 +507,44 @@ export default function Dashboard() {
                             {
                               backgroundColor: colors.primary + '15',
                               borderColor: colors.primary + '30',
-                              height: 240,
-                              width: todayCardWidth
+                              minHeight: timelineCardHeight,
+                              width: horizontalCardWidth,
+                              position: 'relative'
                             }
                           ]}
                           onPress={() => router.push('/shoots')}
                         >
+                          {/* Badge visible only on first card */}
+                          {index === 0 && (
+                            <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.primary }]}>
+                              <Text style={styles.shootCountText}>{stats.todaysShoots.length}</Text>
+                            </View>
+                          )}
                           <View style={styles.todayShootHeader}>
                             <LinearGradient
                               colors={[colors.primary, colors.primaryGradientEnd]}
                               style={styles.todayShootIconSmall}
                             >
-                              <Ionicons name="camera" size={20} color="#fff" />
+                              <Ionicons name="camera" size={timelineCardIconSize} color="#fff" />
                             </LinearGradient>
                             <Text style={[styles.todayShootLabel, { color: colors.primary }]}>TODAY</Text>
                           </View>
 
-                          <Text style={[styles.todayShootTitle, { color: colors.text }]} numberOfLines={2}>
+                          <Text style={[styles.todayShootTitle, { color: colors.text, fontSize: timelineTitleSize }]} numberOfLines={2}>
                             {shoot.event_type}
                           </Text>
-                          <Text style={[styles.todayShootClient, { color: colors.textSecondary }]} numberOfLines={1}>
+                          <Text style={[styles.todayShootClient, { color: colors.textSecondary, fontSize: timelineClientSize }]} numberOfLines={1}>
                             {shoot.client_name}
                           </Text>
 
                           <View style={styles.todayShootFooter}>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="time-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]}>{shoot.start_time}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]}>{shoot.start_time}</Text>
                             </View>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="location-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]} numberOfLines={1}>{shoot.location || 'TBD'}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]} numberOfLines={1}>{shoot.location || 'TBD'}</Text>
                             </View>
                           </View>
                         </TouchableOpacity>
@@ -647,7 +557,7 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, minHeight: timelineCardHeight, width: horizontalCardWidth, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="cafe-outline" size={24} color={colors.textTertiary} />
                      <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>Free Day</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No shoots today</Text>
@@ -655,7 +565,7 @@ export default function Dashboard() {
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 12, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: isPhone ? 1 : 0, padding: isCompactPhone ? 10 : 12, minHeight: timelinePanelHeight, width: timelineSecondFrameWidth }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'shoot').length > 0 ? (
                     timelineData.filter(i => i.type === 'shoot').map((item, index, arr) => (
@@ -687,25 +597,19 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.timelineSplitRow}>
+            <View style={[styles.timelineSplitRow, isPhone && { flexDirection: 'column' }]}>
               <View
-                style={{ flex: 1.25, height: 240 }}
-                onLayout={(e) => setFollowUpCardWidth(e.nativeEvent.layout.width)}
+                style={{ flex: isPhone ? 1 : 0, minHeight: timelinePanelHeight, width: isPhone ? '100%' : horizontalCardWidth, minWidth: 0 }}
               >
                 {stats.todaysFollowUps.length > 0 ? (
                   <View style={{ flex: 1 }}>
-                    {/* Fixed Number Display Badge */}
-                    <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.info }]}>
-                      <Text style={styles.shootCountText}>{stats.todaysFollowUps.length}</Text>
-                    </View>
-
                     <ScrollView
                       horizontal
                       pagingEnabled
                       showsHorizontalScrollIndicator={false}
-                      style={{ flex: 1 }}
+                      style={{ flex: 1, flexGrow: 1 }}
                     >
-                      {stats.todaysFollowUps.map((lead: any) => (
+                      {stats.todaysFollowUps.map((lead: any, index: number) => (
                         <TouchableOpacity
                           key={lead.id}
                           style={[
@@ -713,37 +617,49 @@ export default function Dashboard() {
                             {
                               backgroundColor: colors.info + '15',
                               borderColor: colors.info + '30',
-                              height: 240,
-                              width: followUpCardWidth || todayCardWidth || 200
+                              minHeight: timelineCardHeight,
+                              width: horizontalCardWidth,
+                              position: 'relative'
                             }
                           ]}
                           onPress={() => router.push('/leads')}
                         >
+                          {/* Badge visible only on first card */}
+                          {index === 0 && (
+                            <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.info }]}>
+                              <Text style={styles.shootCountText}>{stats.todaysFollowUps.length}</Text>
+                            </View>
+                          )}
                           <View style={styles.todayShootHeader}>
                             <LinearGradient
                               colors={[colors.info, '#0ea5e9']}
                               style={styles.todayShootIconSmall}
                             >
-                              <Ionicons name="call" size={20} color="#fff" />
+                              <Ionicons name="call" size={timelineCardIconSize} color="#fff" />
                             </LinearGradient>
                             <Text style={[styles.todayShootLabel, { color: colors.info }]}>TODAY</Text>
                           </View>
 
-                          <Text style={[styles.todayShootTitle, { color: colors.text }]} numberOfLines={2}>
+                          <Text style={[styles.todayShootTitle, { color: colors.text, fontSize: timelineTitleSize }]} numberOfLines={2}>
                             {lead.name}
                           </Text>
-                          <Text style={[styles.todayShootClient, { color: colors.textSecondary }]} numberOfLines={1}>
+                          <Text style={[styles.todayShootClient, { color: colors.textSecondary, fontSize: timelineClientSize }]} numberOfLines={1}>
                             {lead.source || 'Lead'}
                           </Text>
 
                           <View style={styles.todayShootFooter}>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="call-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]}>{lead.phone}</Text>
+                              <Text
+                                style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]}
+                                numberOfLines={1}
+                              >
+                                {lead.phone}
+                              </Text>
                             </View>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="chatbubble-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]} numberOfLines={1}>{lead.notes || 'No notes'}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]} numberOfLines={1}>{lead.notes || 'No notes'}</Text>
                             </View>
                           </View>
                         </TouchableOpacity>
@@ -756,7 +672,7 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, minHeight: timelineCardHeight, width: horizontalCardWidth, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="notifications-off-outline" size={24} color={colors.textTertiary} />
                      <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>All Caught Up</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No follow-ups today</Text>
@@ -764,7 +680,7 @@ export default function Dashboard() {
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 20, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: isPhone ? 1 : 0, padding: isCompactPhone ? 14 : 20, minHeight: timelinePanelHeight, width: timelineSecondFrameWidth }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'lead').length > 0 ? (
                     timelineData.filter(i => i.type === 'lead').map((item, index, arr) => (
@@ -794,25 +710,19 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.timelineSplitRow}>
+            <View style={[styles.timelineSplitRow, isPhone && { flexDirection: 'column' }]}>
               <View
-                style={{ flex: 1.25, height: 240 }}
-                onLayout={(e) => setFollowUpCardWidth(e.nativeEvent.layout.width)}
+                style={{ flex: isPhone ? 1 : 0, minHeight: timelinePanelHeight, width: isPhone ? '100%' : horizontalCardWidth }}
               >
                 {stats.todaysClientFollowUps.length > 0 ? (
                   <View style={{ flex: 1 }}>
-                    {/* Fixed Number Display Badge */}
-                    <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.success }]}>
-                      <Text style={styles.shootCountText}>{stats.todaysClientFollowUps.length}</Text>
-                    </View>
-
                     <ScrollView
                       horizontal
                       pagingEnabled
                       showsHorizontalScrollIndicator={false}
-                      style={{ flex: 1 }}
+                      style={{ flex: 1, flexGrow: 1 }}
                     >
-                      {stats.todaysClientFollowUps.map((client: any) => (
+                      {stats.todaysClientFollowUps.map((client: any, index: number) => (
                         <TouchableOpacity
                           key={client.id}
                           style={[
@@ -820,37 +730,44 @@ export default function Dashboard() {
                             {
                               backgroundColor: colors.success + '15',
                               borderColor: colors.success + '30',
-                              height: 240,
-                              width: followUpCardWidth || todayCardWidth
+                              minHeight: timelineCardHeight,
+                              width: horizontalCardWidth,
+                              position: 'relative'
                             }
                           ]}
                           onPress={() => router.push('/clients')}
                         >
+                          {/* Badge visible only on first card */}
+                          {index === 0 && (
+                            <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.success }]}>
+                              <Text style={styles.shootCountText}>{stats.todaysClientFollowUps.length}</Text>
+                            </View>
+                          )}
                           <View style={styles.todayShootHeader}>
                             <LinearGradient
                               colors={[colors.success, '#16a34a']}
                               style={styles.todayShootIconSmall}
                             >
-                              <Ionicons name="call" size={20} color="#fff" />
+                              <Ionicons name="call" size={timelineCardIconSize} color="#fff" />
                             </LinearGradient>
                             <Text style={[styles.todayShootLabel, { color: colors.success }]}>TODAY</Text>
                           </View>
 
-                          <Text style={[styles.todayShootTitle, { color: colors.text }]} numberOfLines={2}>
+                          <Text style={[styles.todayShootTitle, { color: colors.text, fontSize: timelineTitleSize }]} numberOfLines={2}>
                             {client.name}
                           </Text>
-                          <Text style={[styles.todayShootClient, { color: colors.textSecondary }]} numberOfLines={1}>
+                          <Text style={[styles.todayShootClient, { color: colors.textSecondary, fontSize: timelineClientSize }]} numberOfLines={1}>
                             {client.event_type || 'Client'}
                           </Text>
 
                           <View style={styles.todayShootFooter}>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="call-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]}>{client.phone}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]}>{client.phone}</Text>
                             </View>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="location-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]} numberOfLines={1}>{client.event_location || 'No location'}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]} numberOfLines={1}>{client.event_location || 'No location'}</Text>
                             </View>
                           </View>
                         </TouchableOpacity>
@@ -863,7 +780,7 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, minHeight: timelineCardHeight, width: horizontalCardWidth, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="checkmark-circle-outline" size={24} color={colors.textTertiary} />
                      <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>All Followed Up</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No client follow-ups today</Text>
@@ -871,7 +788,7 @@ export default function Dashboard() {
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 20, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: isPhone ? 1 : 0, padding: isCompactPhone ? 14 : 20, minHeight: timelinePanelHeight, width: timelineSecondFrameWidth }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'client').length > 0 ? (
                     timelineData.filter(i => i.type === 'client').map((item, index, arr) => (
@@ -901,25 +818,19 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.timelineSplitRow}>
+            <View style={[styles.timelineSplitRow, isPhone && { flexDirection: 'column' }]}>
               <View
-                style={{ flex: 1.25, height: 240 }}
-                onLayout={(e) => setFollowUpCardWidth(e.nativeEvent.layout.width)}
+                style={{ flex: isPhone ? 1 : 0, minHeight: timelinePanelHeight, width: isPhone ? '100%' : horizontalCardWidth }}
               >
                 {stats.todaysPayments.length > 0 ? (
                   <View style={{ flex: 1 }}>
-                    {/* Fixed Number Display Badge */}
-                    <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.accent }]}>
-                      <Text style={styles.shootCountText}>{stats.todaysPayments.length}</Text>
-                    </View>
-
                     <ScrollView
                       horizontal
                       pagingEnabled
                       showsHorizontalScrollIndicator={false}
-                      style={{ flex: 1 }}
+                      style={{ flex: 1, flexGrow: 1 }}
                     >
-                      {stats.todaysPayments.map((payment: any) => (
+                      {stats.todaysPayments.map((payment: any, index: number) => (
                         <TouchableOpacity
                           key={payment.id}
                           style={[
@@ -927,37 +838,44 @@ export default function Dashboard() {
                             {
                               backgroundColor: colors.accent + '15',
                               borderColor: colors.accent + '30',
-                              height: 240,
-                              width: followUpCardWidth || todayCardWidth || 200
+                              minHeight: timelineCardHeight,
+                              width: horizontalCardWidth,
+                              position: 'relative'
                             }
                           ]}
                           onPress={() => router.push('/payments')}
                         >
+                          {/* Badge visible only on first card */}
+                          {index === 0 && (
+                            <View style={[styles.shootCountBadgeFixed, { backgroundColor: colors.accent }]}>
+                              <Text style={styles.shootCountText}>{stats.todaysPayments.length}</Text>
+                            </View>
+                          )}
                           <View style={styles.todayShootHeader}>
                             <LinearGradient
                               colors={[colors.accent, '#f59e0b']}
                               style={styles.todayShootIconSmall}
                             >
-                              <Ionicons name="card" size={20} color="#fff" />
+                              <Ionicons name="card" size={timelineCardIconSize} color="#fff" />
                             </LinearGradient>
                             <Text style={[styles.todayShootLabel, { color: colors.accent }]}>TODAY</Text>
                           </View>
 
-                          <Text style={[styles.todayShootTitle, { color: colors.text }]} numberOfLines={2}>
+                          <Text style={[styles.todayShootTitle, { color: colors.text, fontSize: timelineTitleSize }]} numberOfLines={2}>
                             Payment Due
                           </Text>
-                          <Text style={[styles.todayShootClient, { color: colors.textSecondary }]} numberOfLines={1}>
+                          <Text style={[styles.todayShootClient, { color: colors.textSecondary, fontSize: timelineClientSize }]} numberOfLines={1}>
                             {payment.client_name}
                           </Text>
 
                           <View style={styles.todayShootFooter}>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="cash-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]}>₹{payment.total_amount?.toLocaleString() || 0}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]}>₹{payment.total_amount?.toLocaleString() || 0}</Text>
                             </View>
                             <View style={styles.todayShootMetaItem}>
                               <Ionicons name="calendar-outline" size={12} color={colors.textTertiary} />
-                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary }]} numberOfLines={1}>{payment.payment_date}</Text>
+                              <Text style={[styles.todayShootMetaText, { color: colors.textTertiary, fontSize: timelineMetaSize }]} numberOfLines={1}>{payment.payment_date}</Text>
                             </View>
                           </View>
                         </TouchableOpacity>
@@ -970,7 +888,7 @@ export default function Dashboard() {
                     )}
                   </View>
                 ) : (
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, height: 240, justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.surface, borderStyle: 'dashed', borderColor: colors.border, minHeight: timelineCardHeight, width: horizontalCardWidth, justifyContent: 'center', alignItems: 'center' }]}>
                      <Ionicons name="cash-outline" size={24} color={colors.textTertiary} />
                      <Text style={{ color: colors.textTertiary, fontSize: 12, fontWeight: '600', marginTop: 8, textAlign: 'center' }}>No Payments Due</Text>
                      <Text style={{ color: colors.textTertiary, fontSize: 10, textAlign: 'center', marginTop: 4 }}>No payments due today</Text>
@@ -978,7 +896,7 @@ export default function Dashboard() {
                 )}
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1.5, padding: 20, height: 240 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: isPhone ? 1 : 0, padding: isCompactPhone ? 14 : 20, minHeight: timelinePanelHeight, width: timelineSecondFrameWidth }]}>
                 <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                   {timelineData.filter(i => i.type === 'payment').length > 0 ? (
                     timelineData.filter(i => i.type === 'payment').map((item, index, arr) => (
@@ -1003,63 +921,63 @@ export default function Dashboard() {
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Overdue Items</Text>
 
-            <View style={styles.overdueGrid}>
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+            <View style={[styles.overdueGrid, { justifyContent: isTablet ? 'flex-start' : 'space-between' }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, padding: isCompactPhone ? 12 : 16, minHeight: overdueOuterHeight, flexBasis: overdueCardBasis, maxWidth: overdueCardBasis }]}>
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.primary + '15', borderColor: colors.primary + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.primary + '15', borderColor: colors.primary + '30', minHeight: overdueInnerHeight, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
                     <LinearGradient
                       colors={[colors.primary, colors.primaryGradientEnd]}
                       style={styles.todayShootIconSmall}
                     >
-                      <Ionicons name="camera" size={24} color="#fff" />
+                      <Ionicons name="camera" size={overdueIconSize} color="#fff" />
                     </LinearGradient>
-                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Shoots</Text>
-                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overdueShoots.length} items</Text>
+                    <Text numberOfLines={1} style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: isCompactPhone ? 8 : 12, alignSelf: 'center', fontSize: overdueTitleFontSize }]}>Overdue Shoots</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center', fontSize: overdueCountFontSize, marginBottom: isCompactPhone ? 8 : 12 }]}>{stats.overdueShoots.length} items</Text>
                   </View>
                 </View>
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, padding: isCompactPhone ? 12 : 16, minHeight: overdueOuterHeight, flexBasis: overdueCardBasis, maxWidth: overdueCardBasis }]}>
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.info + '15', borderColor: colors.info + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.info + '15', borderColor: colors.info + '30', minHeight: overdueInnerHeight, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
                     <LinearGradient
                       colors={[colors.info, '#0ea5e9']}
                       style={styles.todayShootIconSmall}
                     >
-                      <Ionicons name="call" size={24} color="#fff" />
+                      <Ionicons name="call" size={overdueIconSize} color="#fff" />
                     </LinearGradient>
-                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Leads</Text>
-                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overdueLeads.length} items</Text>
+                    <Text numberOfLines={1} style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: isCompactPhone ? 8 : 12, alignSelf: 'center', fontSize: overdueTitleFontSize }]}>Overdue Leads</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center', fontSize: overdueCountFontSize, marginBottom: isCompactPhone ? 8 : 12 }]}>{stats.overdueLeads.length} items</Text>
                   </View>
                 </View>
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, padding: isCompactPhone ? 12 : 16, minHeight: overdueOuterHeight, flexBasis: overdueCardBasis, maxWidth: overdueCardBasis }]}>
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.success + '15', borderColor: colors.success + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.success + '15', borderColor: colors.success + '30', minHeight: overdueInnerHeight, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
                     <LinearGradient
                       colors={[colors.success, '#16a34a']}
                       style={styles.todayShootIconSmall}
                     >
-                      <Ionicons name="person-circle" size={24} color="#fff" />
+                      <Ionicons name="person-circle" size={overdueIconSize} color="#fff" />
                     </LinearGradient>
-                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Clients</Text>
-                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overdueClientFollowUps.length} items</Text>
+                    <Text numberOfLines={1} style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: isCompactPhone ? 8 : 12, alignSelf: 'center', fontSize: overdueTitleFontSize }]}>Overdue Clients</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center', fontSize: overdueCountFontSize, marginBottom: isCompactPhone ? 8 : 12 }]}>{stats.overdueClientFollowUps.length} items</Text>
                   </View>
                 </View>
               </View>
 
-              <View style={[styles.cardContainer, { backgroundColor: colors.surface, flex: 1, padding: 16, height: isTablet ? 240 : 200 }]}>
+              <View style={[styles.cardContainer, { backgroundColor: colors.surface, padding: isCompactPhone ? 12 : 16, minHeight: overdueOuterHeight, flexBasis: overdueCardBasis, maxWidth: overdueCardBasis }]}>
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.accent + '15', borderColor: colors.accent + '30', height: isTablet ? 200 : 160, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
+                  <View style={[styles.todayShootSplitCard, { backgroundColor: colors.accent + '15', borderColor: colors.accent + '30', minHeight: overdueInnerHeight, width: '100%', justifyContent: 'center', alignItems: 'center' }]}>
                     <LinearGradient
                       colors={[colors.accent, '#f59e0b']}
                       style={styles.todayShootIconSmall}
                     >
-                      <Ionicons name="cash" size={24} color="#fff" />
+                      <Ionicons name="cash" size={overdueIconSize} color="#fff" />
                     </LinearGradient>
-                    <Text style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: 12, alignSelf: 'center' }]}>Overdue Payments</Text>
-                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center' }]}>{stats.overduePayments.length} items</Text>
+                    <Text numberOfLines={1} style={[styles.todayShootTitle, { color: colors.text, textAlign: 'center', marginTop: isCompactPhone ? 8 : 12, alignSelf: 'center', fontSize: overdueTitleFontSize }]}>Overdue Payments</Text>
+                    <Text style={[styles.todayShootClient, { color: colors.textSecondary, textAlign: 'center', alignSelf: 'center', fontSize: overdueCountFontSize, marginBottom: isCompactPhone ? 8 : 12 }]}>{stats.overduePayments.length} items</Text>
                   </View>
                 </View>
               </View>
@@ -1247,11 +1165,13 @@ const styles = StyleSheet.create({
   },
   statsGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
   },
   statCardContainer: {
     flex: 1,
-    height: 95,
+    minWidth: 150,
+    minHeight: 95,
   },
   statCard: {
     flex: 1,
@@ -1342,6 +1262,7 @@ const styles = StyleSheet.create({
   cardContainer: {
     borderRadius: 24,
     padding: 16,
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
@@ -1385,16 +1306,21 @@ const styles = StyleSheet.create({
   },
   timelineContent: {
     flex: 1,
+    minWidth: 0,
     paddingVertical: 12,
     paddingHorizontal: 4,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   timelineContentHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    minWidth: 0,
+    flexShrink: 1,
   },
   timelineIconWrapper: {
     width: 32,
@@ -1406,20 +1332,26 @@ const styles = StyleSheet.create({
   },
   timelineTextContainer: {
     flex: 1,
+    minWidth: 0,
+    flexShrink: 1,
   },
   timelineTitle: {
     fontSize: 14,
     fontWeight: '700',
     marginBottom: 2,
+    flexShrink: 1,
   },
   timelineSubtitle: {
     fontSize: 11,
     opacity: 0.7,
+    flexShrink: 1,
   },
   todayBadge: {
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
+    marginLeft: 8,
+    flexShrink: 0,
   },
   todayBadgeText: {
     fontSize: 9,
@@ -1430,13 +1362,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
   },
-  todayShootSplitCard: {
-    padding: 16,
-    borderRadius: 24,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+   todayShootSplitCard: {
+     flex: 1,
+     flexDirection: 'column',
+     padding: 16,
+     borderRadius: 24,
+     borderWidth: 1,
+     overflow: 'hidden',
+     justifyContent: 'flex-start',
+     alignItems: 'flex-start',
+   },
   todayShootHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1504,6 +1439,7 @@ const styles = StyleSheet.create({
   todayShootMetaText: {
     fontSize: 11,
     fontWeight: '500',
+    flexShrink: 1,
   },
   swipeIndicatorContainer: {
     position: 'absolute',
@@ -1591,6 +1527,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
+    alignItems: 'flex-start',
   },
   emptyStateContainer: {
     flex: 1,

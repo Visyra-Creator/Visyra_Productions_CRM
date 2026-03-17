@@ -12,6 +12,10 @@ export async function safeQuery(query: Promise<any>, fallback: any = []) {
       const missingColumn =
         code === 'PGRST204' ||
         message.includes('could not find the') && message.includes('column');
+      const rlsDenied =
+        code === '42501' ||
+        message.includes('row-level security') ||
+        message.includes('permission denied');
 
       if (missingTable) {
         console.warn('Supabase missing table (using fallback):', error);
@@ -23,14 +27,18 @@ export async function safeQuery(query: Promise<any>, fallback: any = []) {
         return fallback;
       }
 
+      if (rlsDenied) {
+        console.warn('Supabase RLS denied query (using fallback):', error);
+        return fallback;
+      }
+
       console.error('Supabase query failed:', error);
-      return fallback;
+      throw error;
     }
 
     return data ?? fallback;
   } catch (err) {
     console.error('Unexpected query error:', err);
-    return fallback;
+    throw err;
   }
 }
-

@@ -23,14 +23,13 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { Image } from 'expo-image';
 import * as ImageManipulator from 'expo-image-manipulator';
 import axios from 'axios';
+import { getBackendBaseUrl } from '../src/api/config';
+import { useFocusEffect } from '@react-navigation/native';
 
 const { width } = Dimensions.get('window');
 const COLUMN_COUNT = width > 768 ? 4 : 2;
 const ITEM_WIDTH = (width - (COLUMN_COUNT + 1) * 16) / COLUMN_COUNT;
-const RAW_API_BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.1.10:8000';
-const API_BASE_URL = RAW_API_BASE_URL.includes('localhost') || RAW_API_BASE_URL.includes('127.0.0.1')
-  ? 'http://192.168.1.10:8000'
-  : RAW_API_BASE_URL;
+const API_BASE_URL = getBackendBaseUrl();
 
 interface PortfolioItem {
   id: number;
@@ -153,6 +152,7 @@ export default function CommercialPortfolio() {
   const imageListRef = useRef<FlatList>(null);
   const [activeItemActions, setActiveItemActions] = useState<number | null>(null);
   const [dimensions, setDimensions] = useState(Dimensions.get('window'));
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const subscription = Dimensions.addEventListener('change', ({ window }) => {
@@ -161,9 +161,10 @@ export default function CommercialPortfolio() {
     return () => subscription?.remove();
   }, []);
 
-  const loadItems = async () => {
+  const loadItems = useCallback(async (reason = 'manual') => {
     setLoading(true);
     try {
+      console.log(`[CommercialPortfolio] Loading items (${reason})...`);
       const result = await portfolioService.getAll();
       const filtered = result
         .filter((item) => item.category === 'Commercial')
@@ -174,11 +175,32 @@ export default function CommercialPortfolio() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadItems();
-  }, []);
+    void loadItems('mount');
+  }, [loadItems]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadItems('focus');
+      return () => {};
+    }, [loadItems])
+  );
+
+  useEffect(() => {
+    const unsubscribe = portfolioService.subscribeToPortfolioChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadItems('realtime');
+      }, 250);
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribe();
+    };
+  }, [loadItems]);
 
   const filteredItems = useMemo(() => {
     return items.filter(item => {
@@ -201,6 +223,9 @@ export default function CommercialPortfolio() {
 
         for (const asset of result.assets) {
           let finalUri = asset.uri;
+          const uniqueToken = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          let uploadFileName = asset.name || `portfolio-${uniqueToken}.${activeTab === 'image' ? 'jpg' : 'mp4'}`;
+          let uploadMimeType = asset.mimeType || (activeTab === 'image' ? 'image/jpeg' : 'video/mp4');
 
           if (activeTab === 'image') {
             const manipResult = await ImageManipulator.manipulateAsync(
@@ -209,13 +234,32 @@ export default function CommercialPortfolio() {
               { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
             );
             finalUri = manipResult.uri;
+            uploadFileName = `portfolio-${uniqueToken}.jpg`;
+            uploadMimeType = 'image/jpeg';
+          }
+
+          try {
+            const localResponse = await fetch(finalUri);
+            const localBlob = await localResponse.blob();
+            console.log('[Commercial Upload] Local file integrity:', {
+              originalUri: asset.uri,
+              finalUri,
+              originalName: asset.name,
+              originalMime: asset.mimeType,
+              uploadFileName,
+              uploadMimeType,
+              blobSize: localBlob.size,
+              blobType: localBlob.type,
+            });
+          } catch (probeError) {
+            console.warn('[Commercial Upload] Failed to inspect local blob before upload:', probeError);
           }
 
           const formData = new FormData();
           formData.append('file', {
             uri: finalUri,
-            name: asset.name || `portfolio-${Date.now()}.${activeTab === 'image' ? 'jpg' : 'mp4'}`,
-            type: asset.mimeType || (activeTab === 'image' ? 'image/jpeg' : 'video/mp4'),
+            name: uploadFileName,
+            type: uploadMimeType,
           } as any);
 
           try {
@@ -237,6 +281,7 @@ export default function CommercialPortfolio() {
             const serverUrl = String(uploadedUrl).startsWith('http') ? uploadedUrl : `${API_BASE_URL}${uploadedUrl}`;
             const thumbRaw = response?.data?.thumbnail_url;
             const thumbUrl = thumbRaw ? (String(thumbRaw).startsWith('http') ? thumbRaw : `${API_BASE_URL}${thumbRaw}`) : null;
+            console.log('[Commercial Upload] Render URLs:', { serverUrl, thumbUrl });
 
             await portfolioService.create({
               title: asset.name,
@@ -268,7 +313,7 @@ export default function CommercialPortfolio() {
             });
           }
         }
-        loadItems();
+        await loadItems('after-upload');
         setIsUploading(false);
         Alert.alert('Success', `${result.assets.length} items processed`);
       }
@@ -282,7 +327,7 @@ export default function CommercialPortfolio() {
   const toggleFeatured = async (item: PortfolioItem) => {
     try {
       await portfolioService.update(String(item.id), { featured: item.featured ? 0 : 1 });
-      loadItems();
+      await loadItems('after-toggle-featured');
     } catch (e) {
       console.error(e);
     }
@@ -294,9 +339,13 @@ export default function CommercialPortfolio() {
       { text: 'Delete', style: 'destructive', onPress: async () => {
         try {
           await portfolioService.delete(String(id));
-          loadItems();
+          await loadItems('after-delete');
           setActiveItemActions(null);
-        } catch (e) { console.error(e); }
+        } catch (e) {
+          console.error(e);
+          const message = e instanceof Error ? e.message : 'Failed to delete media';
+          Alert.alert('Delete blocked', message);
+        }
       }}
     ]);
   };

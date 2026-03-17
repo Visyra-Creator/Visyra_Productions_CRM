@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useThemeStore } from '@/store/themeStore';
 import * as usersService from '@/api/services/users';
 import type { User } from '@/api/services/users';
+import { useFocusEffect } from '@react-navigation/native';
 
 /**
  * Employees Admin Screen
@@ -36,14 +37,11 @@ export default function EmployeesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [approving, setApproving] = useState<string | null>(null);
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load users on mount
-  useEffect(() => {
-    loadUsers();
-  }, []);
-
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async (reason = 'manual') => {
     try {
+      console.log(`[Employees] Loading users (${reason})...`);
       setLoading(true);
       const [pending, all] = await Promise.all([
         usersService.getPendingUsers(),
@@ -57,11 +55,36 @@ export default function EmployeesScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadUsers('mount');
+  }, [loadUsers]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadUsers('focus');
+      return () => {};
+    }, [loadUsers])
+  );
+
+  useEffect(() => {
+    const unsubscribe = usersService.subscribeToUserChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadUsers('realtime');
+      }, 250);
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribe();
+    };
+  }, [loadUsers]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadUsers();
+    await loadUsers('pull-to-refresh');
     setRefreshing(false);
   };
 
@@ -91,7 +114,7 @@ export default function EmployeesScreen() {
       const updatedUser = await usersService.approveUser(userId);
 
       if (updatedUser?.approved) {
-        await loadUsers();
+        await loadUsers('after-approve');
         Alert.alert('Success', 'Employee has been approved');
       } else {
         Alert.alert('Error', 'Failed to approve employee');
@@ -128,9 +151,7 @@ export default function EmployeesScreen() {
     try {
       setApproving(userId);
       await usersService.rejectUser(userId);
-
-      setPendingUsers(pendingUsers.filter(u => u.id !== userId));
-      setAllUsers(allUsers.filter(u => u.id !== userId));
+      await loadUsers('after-reject');
       Alert.alert('Success', 'Employee has been rejected');
     } catch (error) {
       console.error('Failed to reject user:', error);

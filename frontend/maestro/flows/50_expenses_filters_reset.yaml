@@ -1,0 +1,20 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- tapOn: "Monthly Expenses"
+- assertVisible: "Total Expenses"
+- tapOn: "Search expenses..."
+- inputText: "non-existent-expense"
+- assertVisible: "No expenses found"
+- tapOn: "Search expenses..."
+- eraseText
+- tapOn: "add"
+- assertVisible: "New Expense Entry"
+- tapOn: "Expense Title *"
+- inputText: "QA_EXPENSE_AUTOMATION"
+- tapOn: "Amount *"
+- inputText: "1000"
+- tapOn: "Save Expense Entry"
+- assertVisible: "Success"
+- tapOn: "OK"
+

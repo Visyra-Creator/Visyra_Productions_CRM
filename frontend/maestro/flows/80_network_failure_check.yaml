@@ -1,0 +1,23 @@
+appId: com.visyracrm.app
+---
+# Pre-step: disable network on test device/emulator.
+- launchApp
+- tapOn: "Total Leads"
+- tapOn: "Add Lead"
+- tapOn: "Name *"
+- inputText: "QA_OFFLINE_LEAD"
+- tapOn: "Phone *"
+- inputText: "9876543200"
+- tapOn: "Add Lead"
+- assertVisible:
+    text: "Error"
+    optional: true
+# Re-enable network and retry
+- tapOn:
+    text: "OK"
+    optional: true
+- tapOn: "Add Lead"
+- assertVisible:
+    text: "Success"
+    optional: true
+

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -14,16 +14,19 @@ import {
   useWindowDimensions,
   Dimensions,
   ActivityIndicator,
-  Keyboard
+  Keyboard,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import * as leadsService from '../src/api/services/leads';
 import * as clientsService from '../src/api/services/clients';
 import * as appOptionsService from '../src/api/services/appOptions';
+import { fetchLeadsPageData } from '../src/api/services/leadsPage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { format, parseISO, isToday, isThisWeek, isThisMonth, isSameDay, isSameWeek, isSameMonth, startOfWeek, endOfWeek, startOfMonth, endOfMonth, setMonth, setYear, setDate, addWeeks, differenceInCalendarWeeks } from 'date-fns';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import XLSX from 'xlsx';
@@ -75,13 +78,6 @@ const LEAD_SOURCES_DEFAULTS = [
   { label: 'Facebook', value: 'facebook', color: '#1877f2' }
 ];
 
-interface AppOption {
-  id: number;
-  type: string;
-  label: string;
-  value: string;
-  color: string;
-}
 
 const LEAD_STAGES = LEAD_STAGES_DEFAULTS;
 
@@ -107,6 +103,8 @@ const getWeeksInMonthCount = (month: number, year: number) => {
 export default function Leads() {
   const { width } = useWindowDimensions();
   const isTablet = width > 768;
+  const isCompactPhone = width < 390;
+  const summaryCardBasis = isTablet ? '31%' : (width < 390 ? '48%' : '31%');
   const { colors } = useThemeStore();
   const router = useRouter();
 
@@ -122,6 +120,7 @@ export default function Leads() {
   });
   const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [realtimeStatus, setRealtimeStatus] = useState<leadsService.LeadRealtimeStatus>('disconnected');
 
   // UI State
   const [modalVisible, setModalVisible] = useState(false);
@@ -216,94 +215,137 @@ export default function Leads() {
     notes: ''
   });
 
-  const loadData = useCallback(async () => {
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isLoadingDataRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+
+  const loadData = useCallback(async (reason = 'manual', opts?: { force?: boolean }) => {
+    const now = Date.now();
+    if (isLoadingDataRef.current) {
+      console.log(`[Leads] Skipping ${reason}; fetch already in progress.`);
+      return;
+    }
+    if (!opts?.force && now - lastLoadAtRef.current < 500) {
+      console.log(`[Leads] Skipping ${reason}; throttled.`);
+      return;
+    }
+
+    isLoadingDataRef.current = true;
     try {
+      console.log(`[Leads] loadData start (${reason})`);
       setDbReady(true);
       setLoading(true);
 
-      // Seed default lead stages if they don't exist
-      const allOptions = await appOptionsService.getAll();
-      const existingStages = allOptions.filter((option) => option.type === 'lead_stage');
-      if (existingStages.length === 0) {
-        for (const stage of LEAD_STAGES_DEFAULTS) {
-          await appOptionsService.create({
-            type: 'lead_stage',
-            label: stage.label,
-            value: stage.value,
-            color: stage.color,
-          });
-        }
-      }
-
-      const result = await leadsService.getAll();
-      const allLeads = [...result]
-        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? ''))) as Lead[];
-      setLeads(allLeads);
-
-      const refreshedOptions = await appOptionsService.getAll();
-      const sourceOptions = refreshedOptions
-        .filter((option) => option.type === 'lead_source')
-        .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[];
-
-      setLeadSources(
-        sourceOptions.length > 0
-          ? sourceOptions
-          : LEAD_SOURCES_DEFAULTS.map((source, index) => ({
-              id: -(index + 1),
-              type: 'lead_source',
-              label: source.label,
-              value: source.value,
-              color: source.color,
-            }))
-      );
-
-      setLeadStages(
-        refreshedOptions
-          .filter((option) => option.type === 'lead_stage')
-          .sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0)) as AppOption[]
-      );
-
-      setEventTypes(
-        refreshedOptions
-          .filter((option) => option.type === 'event_type')
-          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-      );
-
-      let todayCount = 0;
-      let weekCount = 0;
-      let monthCount = 0;
-      const today = new Date();
-
-      allLeads.forEach(lead => {
-        const createdAtStr = lead.created_at;
-
-        // Today, Week & Month: Total Leads created on that day/week/month
-        if (createdAtStr) {
-          try {
-            const createdAt = parseISO(createdAtStr.replace(' ', 'T') + 'Z'); 
-            if (isSameDay(createdAt, today)) todayCount++;
-            if (isSameWeek(createdAt, today, { weekStartsOn: 1 })) weekCount++;
-            if (isSameMonth(createdAt, today)) monthCount++;
-          } catch (e) {}
-        }
+      const data = await fetchLeadsPageData({
+        leadStagesDefaults: LEAD_STAGES_DEFAULTS,
+        leadSourcesDefaults: LEAD_SOURCES_DEFAULTS,
       });
 
-      setStats({ 
-        today: todayCount, 
-        week: weekCount, 
-        month: monthCount 
+      setLeads(data.leads as Lead[]);
+      setLeadSources(data.leadSources as AppOption[]);
+      setLeadStages(data.leadStages as AppOption[]);
+      setEventTypes(data.eventTypes as AppOption[]);
+      setStats(data.stats);
+      console.log('[Leads] loadData success', {
+        leads: (data.leads ?? []).length,
+        leadSources: (data.leadSources ?? []).length,
+        leadStages: (data.leadStages ?? []).length,
       });
-
     } catch (error) {
       console.error('Error loading leads:', error);
     } finally {
+      lastLoadAtRef.current = Date.now();
+      isLoadingDataRef.current = false;
       setLoading(false);
+      console.log('[Leads] loadData end');
     }
   }, []);
 
   useEffect(() => {
-    loadData();
+    void loadData('mount', { force: true });
   }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      // Skip refetch if editing modal is open (prevents form flicker)
+      if (modalVisible) {
+        console.log('[Leads] screen focused but modal is open, skipping refetch');
+        return () => {};
+      }
+      console.log('[Leads] screen focused, refetching');
+      void loadData('focus');
+      return () => {
+        console.log('[Leads] screen blurred');
+      };
+    }, [loadData, modalVisible])
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        // Skip refetch if editing modal is open (prevents form flicker)
+        if (modalVisible) {
+          console.log('[Leads] app became active but modal is open, skipping refetch');
+          return;
+        }
+        console.log('[Leads] app became active, refetching');
+        void loadData('app-active');
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [loadData, modalVisible]);
+
+  useEffect(() => {
+    const unsubscribe = leadsService.subscribeToLeadChanges(
+      (eventType) => {
+        console.log('[Leads] realtime change received:', eventType);
+
+        // Skip realtime reload if editing modal is open (prevents form flicker)
+        if (modalVisible) {
+          console.log('[Leads] realtime change received but modal is open, skipping reload');
+          return;
+        }
+
+        if (realtimeRefreshTimeoutRef.current) {
+          clearTimeout(realtimeRefreshTimeoutRef.current);
+        }
+        realtimeRefreshTimeoutRef.current = setTimeout(() => {
+          void loadData('realtime-change', { force: true });
+        }, 250);
+      },
+      (status) => {
+        setRealtimeStatus(status);
+      }
+    );
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) {
+        clearTimeout(realtimeRefreshTimeoutRef.current);
+      }
+      unsubscribe();
+    };
+  }, [loadData, modalVisible]);
+
+  useEffect(() => {
+    const unsubscribe = appOptionsService.subscribeToAppOptionChanges(() => {
+      if (modalVisible) {
+        return;
+      }
+      if (realtimeRefreshTimeoutRef.current) {
+        clearTimeout(realtimeRefreshTimeoutRef.current);
+      }
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData('realtime-options', { force: true });
+      }, 250);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [loadData, modalVisible]);
 
   const processedLeads = useMemo(() => {
     let result = [...leads];
@@ -451,7 +493,7 @@ export default function Leads() {
 
             Alert.alert('Success', `${selectedIds.size} leads converted to clients successfully`);
             setSelectedIds(new Set());
-            loadData();
+            await loadData('after-bulk-convert', { force: true });
           } catch (error) {
             console.error('Failed to convert leads:', error);
             Alert.alert('Error', 'Failed to convert leads to clients');
@@ -580,10 +622,15 @@ export default function Leads() {
         const allLeads = await leadsService.getAll();
         const existing: any[] = allLeads.filter((lead: any) => lead.phone === normalizedPhone);
         if (existing.length > 0) {
-          Alert.alert('Duplicate', `A lead named "${existing[0].name}" exists. Add anyway?`, [
+          const existingLead = existing[0];
+          Alert.alert(
+            'Possible Duplicate',
+            `This phone number is already used by "${existingLead?.name ?? 'Unknown'}". You are adding "${finalName}" with the same phone. Add anyway?`,
+            [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Add Anyway', onPress: () => handleSaveLead(true) }
-          ]);
+            ]
+          );
           return;
         }
       }
@@ -616,9 +663,9 @@ export default function Leads() {
           notes: formData.notes,
         });
       }
+      await loadData('after-save-lead', { force: true });
       setModalVisible(false);
       setEditingLeadId(null);
-      loadData();
       Alert.alert('Success', `Lead ${editingLeadId ? 'updated' : 'added'} successfully`);
     } catch (error) {
       console.error(error);
@@ -655,8 +702,11 @@ export default function Leads() {
       { text: 'Delete', style: 'destructive', onPress: async () => {
           try {
             await leadsService.delete(String(id));
-            loadData();
-          } catch (e) { Alert.alert('Error', 'Failed to delete'); }
+            await loadData('after-delete-lead', { force: true });
+          } catch (e) {
+            const message = e instanceof Error ? e.message : 'Failed to delete lead';
+            Alert.alert('Delete blocked', message);
+          }
         }}
     ]);
   };
@@ -688,7 +738,7 @@ export default function Leads() {
                 });
         count++;
       }
-      loadData();
+      await loadData('after-import-leads', { force: true });
       Alert.alert('Success', `Imported ${count} leads.`);
     } catch (e) { Alert.alert('Error', 'Import failed'); }
   };
@@ -705,11 +755,6 @@ export default function Leads() {
     setTempMonth(now.getMonth());
     setTempYear(now.getFullYear());
     setTempWeek(1);
-    // Re-trigger loadData to recalculate stats with today's date
-    setTimeout(() => {
-      loadData();
-      setActiveSummaryType('today');
-    }, 50);
   };
 
   const clearFilters = () => {
@@ -879,7 +924,7 @@ export default function Leads() {
         end={{ x: 1, y: 1 }}
         style={[
           styles.summaryCard,
-          { height: isTablet ? 110 : 90 },
+          { height: isTablet ? 110 : (isCompactPhone ? 74 : 90), flexBasis: summaryCardBasis, maxWidth: summaryCardBasis },
           isActive && { borderWidth: 2, borderColor: '#fff' }
         ]}
       >
@@ -889,29 +934,31 @@ export default function Leads() {
           onPress={() => {
             const newType = activeSummaryType === type ? null : type;
             setActiveSummaryType(newType);
-            setFilters({ startDate: '', endDate: '', source: 'all', stage: 'all', followUpStart: '', followUpEnd: '', nameStarts: '' });
+            setSearchQuery('');
           }}
         >
           <View style={{ flex: 1 }}>
             <View>
-              <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : 20 }]}>{count ?? 0}</Text>
-              <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : 12 }]} numberOfLines={1}>
+              <Text style={[styles.summaryCount, { fontSize: isTablet ? 24 : (isCompactPhone ? 18 : 20) }]}>{count ?? 0}</Text>
+              <Text style={[styles.summaryTitle, { fontSize: isTablet ? 14 : (isCompactPhone ? 11 : 12) }]} numberOfLines={1}>
                 {displayTitle}
               </Text>
               {isActive && (
-                <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : 9 }]}>{getDateDisplay()}</Text>
+                <Text style={[styles.summarySubtitle, { fontSize: isTablet ? 11 : (isCompactPhone ? 8 : 9) }]}>{getDateDisplay()}</Text>
               )}
             </View>
           </View>
           
-          <View style={styles.summaryCardActions}>
-            <TouchableOpacity
-              onPress={(e) => handleConfigPress(e)}
-              style={[styles.summaryActionIcon, { width: isTablet ? 40 : 32, height: isTablet ? 40 : 32 }]}
-            >
-              <Ionicons name={icon} size={isTablet ? 24 : 20} color="#fff" />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            onPress={(e) => {
+              e.stopPropagation();
+              handleConfigPress(e);
+            }}
+            style={[styles.summaryIconContainer, { width: isTablet ? 44 : (isCompactPhone ? 32 : 36), height: isTablet ? 44 : (isCompactPhone ? 32 : 36) }]}
+            activeOpacity={0.7}
+          >
+            <Ionicons name={icon} size={isTablet ? 28 : (isCompactPhone ? 20 : 24)} color="#fff" />
+          </TouchableOpacity>
         </TouchableOpacity>
       </LinearGradient>
     );
@@ -1021,6 +1068,39 @@ export default function Leads() {
           <TextInput style={[styles.searchInput, { color: colors.text }]} placeholder="Search leads..." placeholderTextColor={colors.textTertiary} value={searchQuery} onChangeText={setSearchQuery} />
           {searchQuery ? <TouchableOpacity onPress={() => setSearchQuery('')}><Ionicons name="close-circle" size={18} color={colors.textTertiary} /></TouchableOpacity> : null}
         </View>
+
+        <View
+          style={[
+            styles.realtimeBadge,
+            {
+              backgroundColor: realtimeStatus === 'connected' ? `${colors.success}22` : `${colors.error}22`,
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.realtimeDot,
+              { backgroundColor: realtimeStatus === 'connected' ? colors.success : colors.error },
+            ]}
+          />
+          <Text
+            style={[
+              styles.realtimeText,
+              { color: realtimeStatus === 'connected' ? colors.success : colors.error },
+            ]}
+          >
+            {realtimeStatus === 'connected' ? 'Live' : 'Offline'}
+          </Text>
+        </View>
+
+        {(activeSummaryType !== null || searchQuery) && (
+          <TouchableOpacity
+            style={[styles.iconButton, { backgroundColor: colors.surface }]}
+            onPress={resetSummarySelection}
+          >
+            <Ionicons name="refresh-outline" size={20} color={colors.error} />
+          </TouchableOpacity>
+        )}
 
         <View style={styles.actionButtons}>
           <TouchableOpacity style={[styles.iconButton, { backgroundColor: colors.surface }]} onPress={() => setIsFilterModalVisible(true)}><Ionicons name="funnel-outline" size={20} color={isAnyFilterActive ? colors.primary : colors.textSecondary} /></TouchableOpacity>
@@ -1505,11 +1585,11 @@ export default function Leads() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   summaryContainer: { padding: 16, gap: 12 },
-  summaryCardsRow: { flexDirection: 'row', gap: 12, justifyContent: 'space-between' },
+  summaryCardsRow: { flexDirection: 'row', gap: 12, justifyContent: 'space-between', flexWrap: 'wrap' },
   clearSummaryBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, marginTop: 4 },
   clearSummaryBadge: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   clearSummaryText: { fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
-  summaryCard: { flex: 1, borderRadius: 16, padding: 0, elevation: 4, overflow: 'hidden' },
+  summaryCard: { flexGrow: 1, borderRadius: 16, padding: 0, elevation: 4, overflow: 'hidden', minWidth: 120 },
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12 },
   summaryCount: { color: '#fff', fontWeight: '800' },
   summaryTitle: { color: 'rgba(255,255,255,0.8)', fontWeight: '600' },
@@ -1520,6 +1600,9 @@ const styles = StyleSheet.create({
   filterBar: { flexDirection: 'row', paddingHorizontal: 16, gap: 12, marginBottom: 12, alignItems: 'center' },
   searchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, borderRadius: 16, height: 48 },
   searchInput: { flex: 1, paddingHorizontal: 8, fontSize: 16 },
+  realtimeBadge: { height: 36, borderRadius: 18, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  realtimeDot: { width: 8, height: 8, borderRadius: 4 },
+  realtimeText: { fontSize: 12, fontWeight: '700' },
   actionButtons: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   iconButton: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   addBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 48, paddingHorizontal: 12, borderRadius: 16, elevation: 2 },

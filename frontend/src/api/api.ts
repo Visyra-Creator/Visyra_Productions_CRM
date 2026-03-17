@@ -1,6 +1,7 @@
 import axios from 'axios';
+import { getBackendApiBaseUrl } from './config';
 
-const API_URL = `${process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/api`;
+const API_URL = getBackendApiBaseUrl();
 
 const apiClient = axios.create({
   baseURL: API_URL,

@@ -101,6 +101,54 @@ function normalizeApproved(value: unknown): boolean {
   return false;
 }
 
+export async function getCurrentAvatarUrl(): Promise<string | null> {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) {
+    if (!isMissingSessionError(error)) {
+      console.error('[auth] getCurrentAvatarUrl error:', error.message);
+    }
+    return null;
+  }
+  return ((data?.user?.user_metadata as { avatar_url?: string } | undefined)?.avatar_url ?? null) as string | null;
+}
+
+export async function updateAvatarMetadata(avatarUrl: string): Promise<{ error: string | null }> {
+  const { error } = await supabase.auth.updateUser({
+    data: { avatar_url: avatarUrl },
+  });
+  if (error) {
+    console.error('[auth] updateAvatarMetadata error:', error.message);
+  }
+  return { error: error?.message ?? null };
+}
+
+export async function changePasswordWithVerification(params: {
+  email: string;
+  currentPassword: string;
+  newPassword: string;
+}): Promise<{ error: string | null }> {
+  const { email, currentPassword, newPassword } = params;
+
+  const { error: verifyError } = await supabase.auth.signInWithPassword({
+    email,
+    password: currentPassword,
+  });
+
+  if (verifyError) {
+    return { error: 'Current password is incorrect.' };
+  }
+
+  const { error: updateError } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (updateError) {
+    return { error: updateError.message || 'Failed to update password.' };
+  }
+
+  return { error: null };
+}
+
 // ─── signup ───────────────────────────────────────────────────────────────────
 //
 // Flow:
@@ -283,11 +331,19 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   return fetchUserRow(authData.user.id);
 }
 
+export async function restoreSessionUser(): Promise<AuthUser | null> {
+  return getCurrentUser();
+}
+
 // ─── logout ───────────────────────────────────────────────────────────────────
 
 export async function logout(): Promise<{ error: string | null }> {
   const { error } = await supabase.auth.signOut();
   return { error: error ? error.message : null };
+}
+
+export async function signOutSafe(): Promise<{ error: string | null }> {
+  return logout();
 }
 
 // ─── updateProfile ────────────────────────────────────────────────────────────

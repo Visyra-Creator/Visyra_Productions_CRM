@@ -15,6 +15,7 @@ import {
   SectionList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useThemeStore } from '../src/store/themeStore';
 import * as packagesService from '../src/api/services/packages';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -80,6 +81,7 @@ export default function WeddingPackages() {
   // Edit Package State
   const [editingPackage, setEditingPackage] = useState<Package | null>(null);
   const [isEditPackageModalVisible, setIsEditPackageModalVisible] = useState(false);
+  const realtimeRefreshTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -93,8 +95,9 @@ export default function WeddingPackages() {
     description: '',
   });
 
-  const loadPackages = async () => {
+  const loadPackages = useCallback(async (reason = 'manual') => {
     try {
+      console.log(`[WeddingPackages] Loading packages (${reason})...`);
       const allTypes = [...WEDDING_SECTION_TYPES, ...customSections].map(t => t.type);
       const result = await packagesService.getAll();
       const filtered = result
@@ -104,11 +107,32 @@ export default function WeddingPackages() {
     } catch (error) {
       console.error('Error loading wedding packages:', error);
     }
-  };
+  }, [customSections]);
 
   useEffect(() => {
-    loadPackages();
-  }, []);
+    void loadPackages('mount');
+  }, [loadPackages]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadPackages('focus');
+      return () => {};
+    }, [loadPackages])
+  );
+
+  useEffect(() => {
+    const unsubscribe = packagesService.subscribeToPackageChanges(() => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadPackages('realtime');
+      }, 250);
+    });
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribe();
+    };
+  }, [loadPackages]);
 
   const sections = useMemo(() => {
     const allSections = [...WEDDING_SECTION_TYPES, ...customSections];
@@ -217,7 +241,8 @@ export default function WeddingPackages() {
               Alert.alert('Success', 'Section and its packages deleted');
             } catch (error) {
               console.error('Error deleting section:', error);
-              Alert.alert('Error', 'Failed to delete section');
+              const message = error instanceof Error ? error.message : 'Failed to delete section';
+              Alert.alert('Delete blocked', message);
             }
           }
         }
@@ -555,7 +580,8 @@ export default function WeddingPackages() {
               Alert.alert('Success', 'Package deleted');
             } catch (error) {
               console.error('Error deleting package:', error);
-              Alert.alert('Error', 'Failed to delete package');
+              const message = error instanceof Error ? error.message : 'Failed to delete package';
+              Alert.alert('Delete blocked', message);
             }
           }
         }

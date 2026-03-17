@@ -1,0 +1,17 @@
+appId: com.visyracrm.app
+---
+# Device B flow (observer): keep this flow running while Device A creates/updates records.
+- launchApp
+- tapOn: "Total Leads"
+- assertVisible: "Search leads..."
+- extendedWaitUntil:
+    visible: "QA_SYNC_LEAD"
+    timeout: 30000
+- assertVisible: "QA_SYNC_LEAD"
+- back
+- tapOn: "Total Clients"
+- extendedWaitUntil:
+    visible: "QA_SYNC_CLIENT"
+    timeout: 30000
+- assertVisible: "QA_SYNC_CLIENT"
+

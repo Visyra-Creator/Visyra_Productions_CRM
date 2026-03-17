@@ -72,6 +72,7 @@ async def handle_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
+    logging.info(f"[upload] incoming filename={file.filename} content_type={file.content_type}")
     # Sanitize filename or use UUID to prevent overwrites
     ext = Path(file.filename).suffix
     unique_filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.urandom(4).hex()}{ext}"
@@ -80,6 +81,13 @@ async def handle_upload(
     # CRITICAL: Copy directly from the stream to prevent any library-side compression
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+
+    try:
+        file_size = file_path.stat().st_size
+    except Exception:
+        file_size = -1
+
+    logging.info(f"[upload] saved unique_filename={unique_filename} extension={ext} size_bytes={file_size}")
 
     # Generate thumbnail in background for images
     background_tasks.add_task(generate_thumbnail, str(file_path), unique_filename)

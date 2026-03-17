@@ -1,0 +1,25 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- tapOn: "Total Clients"
+- tapOn: "Add Client"
+- tapOn: "Client ID"
+- inputText: "C9901"
+- tapOn: "Name *"
+- inputText: "QA_CLIENT_AUTOMATION"
+- tapOn: "Phone *"
+- inputText: "9876543211"
+- tapOn: "Add Client"
+- assertVisible: "Success"
+- tapOn: "OK"
+- tapOn: "Search clients (ID, Name, Phone)..."
+- inputText: "QA_CLIENT_AUTOMATION"
+- assertVisible: "QA_CLIENT_AUTOMATION"
+# Delete protection validation (expected when linked data exists)
+- tapOn:
+    text: "Delete Client"
+    optional: true
+- assertVisible:
+    text: "Delete blocked"
+    optional: true
+

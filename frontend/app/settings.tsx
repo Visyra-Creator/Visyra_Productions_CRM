@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -6,14 +6,59 @@ import {
   ScrollView,
   TouchableOpacity,
   Switch,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
 import { useRouter } from 'expo-router';
+import { useAuthStore } from '../src/store/authStore';
+import { resetSharedCRMData } from '../src/api/services/admin';
 
 export default function Settings() {
   const { colors, mode, toggleTheme } = useThemeStore();
+  const { role } = useAuthStore();
   const router = useRouter();
+  const [resetting, setResetting] = useState(false);
+
+  const handleResetAllData = () => {
+    if (resetting) return;
+
+    Alert.alert(
+      'Reset All CRM Data',
+      'This will permanently delete all shared CRM records for every user and admin. Accounts will not be deleted.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Final Confirmation',
+              'This action cannot be undone. Do you want to delete all CRM data now?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete All Data',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      setResetting(true);
+                      await resetSharedCRMData();
+                      Alert.alert('Reset Complete', 'All shared CRM data has been deleted for all users.');
+                    } catch (error: any) {
+                      Alert.alert('Reset Failed', error?.message || 'Unable to reset data right now.');
+                    } finally {
+                      setResetting(false);
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  };
 
   const SettingItem = ({ icon, title, subtitle, onPress, rightElement }: any) => (
     <TouchableOpacity
@@ -103,6 +148,34 @@ export default function Settings() {
           />
         </View>
 
+        {role === 'admin' && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.error }]}>Danger Zone</Text>
+            <TouchableOpacity
+              style={[
+                styles.resetButton,
+                {
+                  backgroundColor: colors.error + '15',
+                  borderColor: colors.error + '40',
+                  opacity: resetting ? 0.7 : 1,
+                },
+              ]}
+              onPress={handleResetAllData}
+              disabled={resetting}
+            >
+              <Ionicons name="trash-outline" size={20} color={colors.error} />
+              <View style={styles.resetButtonContent}>
+                <Text style={[styles.resetButtonTitle, { color: colors.error }]}>Reset Entire CRM Database</Text>
+                <Text style={[styles.resetButtonSubtitle, { color: colors.textSecondary }]}>
+                  {resetting
+                    ? 'Reset in progress...'
+                    : 'Deletes all shared records for all users and admins'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>About</Text>
           <SettingItem
@@ -161,5 +234,24 @@ const styles = StyleSheet.create({
   },
   settingSubtitle: {
     fontSize: 14,
+  },
+  resetButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+  },
+  resetButtonContent: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  resetButtonTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  resetButtonSubtitle: {
+    fontSize: 13,
   },
 });

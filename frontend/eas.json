@@ -7,17 +7,26 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://photo-admin-hub-3.preview.emergentagent.com"
+      },
       "android": {
         "buildType": "apk"
       }
     },
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://photo-admin-hub-3.preview.emergentagent.com"
+      },
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://photo-admin-hub-3.preview.emergentagent.com"
+      },
       "android": {
         "buildType": "apk"
       }
@@ -25,6 +34,5 @@
   },
   "submit": {
     "production": {}
-  },
-
+  }
 }

@@ -14,7 +14,8 @@ import {
   useWindowDimensions,
   ActivityIndicator,
   Switch,
-  Pressable
+  Pressable,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '../src/store/themeStore';
@@ -23,18 +24,20 @@ import * as paymentRecordsService from '../src/api/services/paymentRecords';
 import * as clientsService from '../src/api/services/clients';
 import * as shootsService from '../src/api/services/shoots';
 import * as appOptionsService from '../src/api/services/appOptions';
+import { fetchPaymentsPageData } from '../src/api/services/paymentsPage';
 import * as expensesService from '../src/api/services/expenses';
 import { format, parseISO, isSameDay, isSameWeek, isSameMonth, isBefore, isWithinInterval, startOfMonth, endOfMonth, isAfter } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuthStore } from '../src/store/authStore';
 
 interface Invoice {
   id: number;
   payment_id?: string;
-  client_id: number;
-  shoot_id: number;
+  client_id: string | number;
+  shoot_id: string | number;
   client_name?: string;
   event_type?: string;
   total_amount: number;
@@ -55,8 +58,8 @@ interface PaymentRecord {
   created_at?: string;
 }
 
-interface Client { id: number; name: string; }
-interface Shoot { id: number; client_id: number; event_type: string; }
+interface Client { id: string | number; name: string; }
+interface Shoot { id: string | number; client_id: string | number; event_type: string; }
 interface AppOption {
   id: number;
   type: string;
@@ -74,36 +77,13 @@ const PAYMENT_METHODS_DEFAULTS = [
 ];
 
 export default function Payments() {
-  const SortOption = ({ label, value, icon }: { label: string; value: string; icon: any }) => (
-    <TouchableOpacity
-      style={[styles.sortOption, { backgroundColor: sortBy === value ? colors.primary : colors.surface, borderColor: colors.border }]}
-      onPress={() => {
-        setSortBy(value as any);
-        setIsSortModalVisible(false);
-      }}
-    >
-      <Ionicons name={icon} size={18} color={sortBy === value ? '#fff' : colors.text} />
-      <Text style={[styles.sortOptionText, { color: sortBy === value ? '#fff' : colors.text }]}>{label}</Text>
-    </TouchableOpacity>
-  );
+  // Hooks must be called unconditionally and in the same order
   const { width, height } = useWindowDimensions();
   const isTablet = width > 768;
+  const summaryCardBasis = isTablet ? '31%' : (width < 390 ? '48%' : '31%');
   const { colors } = useThemeStore();
   const router = useRouter();
   const { role } = useAuthStore();
-
-  // ── Role Guard ─────────────────────────────────────────────────────────────
-  // Must be evaluated before any data-fetching effects run.
-  useEffect(() => {
-    if (role !== null && role !== 'admin') {
-      router.replace('/');
-    }
-  }, [role, router]);
-
-  if (role !== null && role !== 'admin') {
-    return null; // render nothing while redirect happens
-  }
-  // ──────────────────────────────────────────────────────────────────────────
   const params = useLocalSearchParams();
   const lastProcessedNavigationToken = useRef<string | null>(null);
   const getParam = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
@@ -164,7 +144,7 @@ export default function Payments() {
   const [formData, setFormData] = useState({
     client_id: '',
     client_name: '',
-    shoot_id: null as number | null,
+    shoot_id: null as string | number | null,
     total_amount: '',
     due_date: new Date(),
     payment_method: 'UPI',
@@ -179,6 +159,19 @@ export default function Payments() {
     payment_method: 'UPI',
     notes: ''
   });
+  const isLoadingDataRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const realtimeRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Role Guard: Check auth early ────────────────────────────────────────────
+  useEffect(() => {
+    if (role !== null && role !== 'admin') {
+      router.replace('/');
+    }
+  }, [role, router]);
+
+  // Don't early return - will conditionally render at JSX level
+  // ──────────────────────────────────────────────────────────────────────────
 
   const resetInvoiceForm = useCallback(() => {
     setFormData({
@@ -212,60 +205,91 @@ export default function Payments() {
     resetInvoiceForm();
   }, [openPaymentFormAt, resetInvoiceForm]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (reason: string, opts?: { force?: boolean }) => {
+    const now = Date.now();
+    if (isLoadingDataRef.current) {
+      console.log(`[Payments] Skipping ${reason}; fetch already in progress.`);
+      return;
+    }
+    if (!opts?.force && now - lastLoadAtRef.current < 500) {
+      console.log(`[Payments] Skipping ${reason}; throttled.`);
+      return;
+    }
+
+    isLoadingDataRef.current = true;
     try {
+      console.log(`[Payments] Loading data (${reason})...`);
       setDbReady(true);
       setLoading(true);
 
-      // Seed default payment methods if they don't exist
-      const options = await appOptionsService.getAll();
-      const existingMethods = options.filter((option) => option.type === 'payment_method');
-      if (existingMethods.length === 0) {
-        for (const method of PAYMENT_METHODS_DEFAULTS) {
-          await appOptionsService.create({ type: 'payment_method', label: method.label, value: method.value });
-        }
-      }
-
-      const [inv, pr, c, s, allOptions] = await Promise.all([
-        paymentsService.getAll(),
-        paymentRecordsService.getAll(),
-        clientsService.getAll(),
-        shootsService.getAll(),
-        appOptionsService.getAll(),
+      const [data, expResult] = await Promise.all([
+        fetchPaymentsPageData({
+          paymentMethodsDefaults: PAYMENT_METHODS_DEFAULTS,
+        }),
+        expensesService.getAll(),
       ]);
 
-      const clientsById = new Map(c.map((client: any) => [String(client.id), client]));
-      const shootsById = new Map(s.map((shoot: any) => [String(shoot.id), shoot]));
-
-      const invoicesWithRelations = [...inv]
-        .map((payment: any) => ({
-          ...payment,
-          client_name: clientsById.get(String(payment.client_id))?.name ?? null,
-          event_type: shootsById.get(String(payment.shoot_id))?.event_type ?? null,
-        }))
-        .sort((a: any, b: any) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
-
-      setInvoices(invoicesWithRelations as Invoice[]);
-      setPaymentRecords(
-        [...pr].sort((a: any, b: any) => String(b.payment_date ?? '').localeCompare(String(a.payment_date ?? ''))) as PaymentRecord[]
-      );
-      setClients(
-        [...c].sort((a: any, b: any) => String(a.name ?? '').localeCompare(String(b.name ?? ''))) as Client[]
-      );
-      setShoots(s as Shoot[]);
-      setPaymentMethods(
-        allOptions
-          .filter((option) => option.type === 'payment_method')
-          .sort((a, b) => String(a.label ?? '').localeCompare(String(b.label ?? ''))) as AppOption[]
-      );
+      setInvoices(data.invoices as Invoice[]);
+      setPaymentRecords(data.paymentRecords as PaymentRecord[]);
+      setClients(data.clients as Client[]);
+      setShoots(data.shoots as Shoot[]);
+      setPaymentMethods(data.paymentMethods as AppOption[]);
+      setExpenses(expResult as any[]);
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
+      lastLoadAtRef.current = Date.now();
+      isLoadingDataRef.current = false;
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { void loadData('mount', { force: true }); }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadData('focus');
+      return () => {};
+    }, [loadData])
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void loadData('app-active');
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [loadData]);
+
+  useEffect(() => {
+    const scheduleRefresh = (reason: string) => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      realtimeRefreshTimeoutRef.current = setTimeout(() => {
+        void loadData(reason, { force: true });
+      }, 250);
+    };
+
+    const unsubscribePayments = paymentsService.subscribeToPaymentChanges(() => scheduleRefresh('realtime-payments'));
+    const unsubscribePaymentRecords = paymentRecordsService.subscribeToPaymentRecordChanges(() => scheduleRefresh('realtime-payment-records'));
+    const unsubscribeClients = clientsService.subscribeToClientChanges(() => scheduleRefresh('realtime-clients'));
+    const unsubscribeShoots = shootsService.subscribeToShootChanges(() => scheduleRefresh('realtime-shoots'));
+    const unsubscribeExpenses = expensesService.subscribeToExpenseChanges(() => scheduleRefresh('realtime-expenses'));
+    const unsubscribeOptions = appOptionsService.subscribeToAppOptionChanges(() => scheduleRefresh('realtime-options'));
+
+    return () => {
+      if (realtimeRefreshTimeoutRef.current) clearTimeout(realtimeRefreshTimeoutRef.current);
+      unsubscribePayments();
+      unsubscribePaymentRecords();
+      unsubscribeClients();
+      unsubscribeShoots();
+      unsubscribeExpenses();
+      unsubscribeOptions();
+    };
+  }, [loadData]);
 
   // Handle auto-fill form from navigation params
   useEffect(() => {
@@ -274,8 +298,7 @@ export default function Payments() {
     }
 
     if (autoEditPaymentId && invoices.length > 0) {
-      const invoiceId = parseInt(autoEditPaymentId);
-      const invoiceToEdit = invoices.find(inv => inv.id === invoiceId);
+      const invoiceToEdit = invoices.find(inv => String(inv.id) === String(autoEditPaymentId));
 
       if (invoiceToEdit && !modalVisible) {
         const firstPayment = paymentRecords.find(p => p.invoice_id === invoiceToEdit.id);
@@ -319,7 +342,9 @@ export default function Payments() {
       if (!modalVisible) {
         let selectedShootId: number | null = null;
         if (eventType && shoots.length > 0) {
-          const matchingShoot = shoots.find(s => s.client_id === parseInt(clientId) && s.event_type === eventType);
+          const matchingShoot = shoots.find(
+            s => String(s.client_id) === String(clientId) && normalizeEventText(s.event_type) === normalizeEventText(eventType)
+          );
           if (matchingShoot) {
             selectedShootId = matchingShoot.id;
           }
@@ -383,19 +408,6 @@ export default function Payments() {
 
   const [expenses, setExpenses] = useState<any[]>([]);
 
-  const loadExpenses = useCallback(async () => {
-    try {
-      const expResult = await expensesService.getAll();
-      setExpenses(expResult as any[]);
-    } catch (error) {
-      console.error('Error loading expenses:', error);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadExpenses();
-  }, [loadExpenses]);
-
   const stats = useMemo(() => {
     const now = new Date();
     const totalRevenue = invoices.reduce((s, inv) => s + (inv.total_amount || 0), 0);
@@ -439,7 +451,7 @@ export default function Payments() {
       });
     }
     if (filters.client_id !== 'all') {
-      result = result.filter(inv => inv.client_id === parseInt(filters.client_id));
+      result = result.filter(inv => String(inv.client_id) === String(filters.client_id));
     }
     if (filters.payment_method !== 'all') {
       result = result.filter(inv => {
@@ -516,6 +528,50 @@ export default function Payments() {
     return `P${String(serial).padStart(4, '0')}`;
   }, [invoices]);
 
+  const normalizeEventText = useCallback((value: string | null | undefined) => {
+    return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }, []);
+
+  const resolveShootIdForClientEvent = useCallback((
+    clientIdRaw: string | number | null | undefined,
+    eventLabelRaw: string | null | undefined,
+    preferredShootId?: string | number | null,
+  ): string | number | null => {
+    const clientId = String(clientIdRaw ?? '').trim();
+    if (!clientId) return null;
+
+    const clientShoots = shoots.filter((s) => String(s.client_id) === clientId);
+    if (clientShoots.length === 0) return null;
+
+    if (preferredShootId !== null && preferredShootId !== undefined && String(preferredShootId) !== '') {
+      const preferred = clientShoots.find((s) => String(s.id) === String(preferredShootId));
+      if (preferred) return preferred.id;
+    }
+
+    const target = normalizeEventText(eventLabelRaw);
+    if (target) {
+      const exact = clientShoots.find((s) => normalizeEventText(s.event_type) === target);
+      if (exact) return exact.id;
+
+      const fuzzy = clientShoots.find((s) => {
+        const eventType = normalizeEventText(s.event_type);
+        return eventType.includes(target) || target.includes(eventType);
+      });
+      if (fuzzy) return fuzzy.id;
+    }
+
+    if (clientShoots.length === 1) return clientShoots[0].id;
+    return null;
+  }, [normalizeEventText, shoots]);
+
+  useEffect(() => {
+    if (!formData.client_id || formData.shoot_id || !prefilledShootEventLabel) return;
+    const resolved = resolveShootIdForClientEvent(formData.client_id, prefilledShootEventLabel);
+    if (resolved) {
+      setFormData((prev) => ({ ...prev, shoot_id: resolved }));
+    }
+  }, [formData.client_id, formData.shoot_id, prefilledShootEventLabel, resolveShootIdForClientEvent]);
+
   const handleSaveInvoice = async () => {
     console.log('[Payments] Create Invoice handler triggered');
     if (!formData.client_id) {
@@ -523,7 +579,8 @@ export default function Payments() {
       Alert.alert('Error', 'Please select a client');
       return;
     }
-    if (!formData.shoot_id) {
+    const resolvedShootId = formData.shoot_id ?? resolveShootIdForClientEvent(formData.client_id, prefilledShootEventLabel);
+    if (!resolvedShootId) {
       console.log('[Payments] Create Invoice blocked: missing shoot/event');
       Alert.alert('Error', 'Please select a shoot/event');
       return;
@@ -535,7 +592,8 @@ export default function Payments() {
     }
 
     try {
-      const { client_id, shoot_id, total_amount, due_date, present_date, first_paid_amount, payment_method, payment_title } = formData;
+      const { client_id, total_amount, due_date, present_date, first_paid_amount, payment_method, payment_title } = formData;
+      const shoot_id = resolvedShootId;
       const total = parseFloat(total_amount);
       const paidAmount = first_paid_amount ? parseFloat(first_paid_amount) : 0;
       console.log('[Payments] Saving invoice...', { editingInvoiceId: editingInvoice?.id ?? null, client_id, shoot_id, total, paidAmount });
@@ -637,7 +695,7 @@ export default function Payments() {
       setAddPaymentModalVisible(false);
       setSelectedInvoiceForPayment(null);
       setEditingPaymentRecord(null);
-      loadData();
+      await loadData('after-save-payment', { force: true });
     } catch (error) {
       console.error('Error saving payment:', error);
       Alert.alert('Error', 'Failed to record payment');
@@ -653,9 +711,10 @@ export default function Payments() {
         onPress: async () => {
           try {
             await paymentRecordsService.delete(String(recordId));
-            loadData();
+              await loadData('after-delete-payment-record', { force: true });
           } catch (error) {
-            Alert.alert('Error', 'Failed to delete payment');
+            const message = error instanceof Error ? error.message : 'Failed to delete payment';
+            Alert.alert('Delete blocked', message);
           }
         }
       }
@@ -692,9 +751,10 @@ export default function Payments() {
         onPress: async () => {
           try {
             await paymentsService.delete(String(invoiceId));
-            loadData();
+              await loadData('after-delete-invoice', { force: true });
           } catch (error) {
-            Alert.alert('Error', 'Failed to delete invoice');
+            const message = error instanceof Error ? error.message : 'Failed to delete invoice';
+            Alert.alert('Delete blocked', message);
           }
         }
       }
@@ -728,14 +788,14 @@ export default function Payments() {
 
     if (useGradient) {
       return (
-        <LinearGradient colors={gradient} style={[styles.summaryCard, { height: isTablet ? 100 : 80 }]}>
+        <LinearGradient colors={gradient} style={[styles.summaryCard, { height: isTablet ? 100 : 80, flexBasis: summaryCardBasis, maxWidth: summaryCardBasis }]}>
           {content}
         </LinearGradient>
       );
     }
 
     return (
-      <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border, height: isTablet ? 100 : 80 }]}>
+      <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border, height: isTablet ? 100 : 80, flexBasis: summaryCardBasis, maxWidth: summaryCardBasis }]}>
         {content}
       </View>
     );
@@ -884,6 +944,25 @@ export default function Payments() {
     );
   }
 
+  // SortOption component
+  const SortOption = ({ label, value, icon }: { label: string; value: string; icon: any }) => (
+    <TouchableOpacity
+      style={[styles.sortOption, { backgroundColor: sortBy === value ? colors.primary : colors.surface, borderColor: colors.border }]}
+      onPress={() => {
+        setSortBy(value as any);
+        setIsSortModalVisible(false);
+      }}
+    >
+      <Ionicons name={icon} size={18} color={sortBy === value ? '#fff' : colors.text} />
+      <Text style={[styles.sortOptionText, { color: sortBy === value ? '#fff' : colors.text }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+
+
+  if (role !== null && role !== 'admin') {
+    return null;
+  }
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.summaryContainer}>
@@ -1003,13 +1082,13 @@ export default function Payments() {
               {formData.client_id && (
                 <>
                   <TouchableOpacity style={[styles.selector, { backgroundColor: colors.primary + '10', borderColor: colors.primary }]} onPress={() => setShowClientPaymentsDropdown(!showClientPaymentsDropdown)}>
-                    <Text style={{ color: colors.primary, fontWeight: '600' }}>View Client Payments ({invoices.filter(inv => inv.client_id === parseInt(formData.client_id as string)).length})</Text>
+                    <Text style={{ color: colors.primary, fontWeight: '600' }}>View Client Payments ({invoices.filter(inv => String(inv.client_id) === String(formData.client_id)).length})</Text>
                     <Ionicons name={showClientPaymentsDropdown ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
                   </TouchableOpacity>
 
                   {showClientPaymentsDropdown && (
                     <FlatList
-                      data={invoices.filter(inv => inv.client_id === parseInt(formData.client_id as string))}
+                      data={invoices.filter(inv => String(inv.client_id) === String(formData.client_id))}
                       keyExtractor={item => item.id.toString()}
                       scrollEnabled={false}
                       ListEmptyComponent={<Text style={{ color: colors.textTertiary, padding: 10 }}>No payments for this client</Text>}
@@ -1272,7 +1351,7 @@ export default function Payments() {
 
               <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Client</Text>
               <TouchableOpacity style={[styles.input, { backgroundColor: colors.background, padding: 10, borderRadius: 8 }]} onPress={() => setFilters({ ...filters, client_id: filters.client_id === 'all' ? clients[0]?.id.toString() || 'all' : 'all' })}>
-                <Text style={{ color: filters.client_id !== 'all' ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.client_id !== 'all' ? clients.find(c => c.id === parseInt(filters.client_id))?.name || 'Select Client' : 'All Clients'}</Text>
+                <Text style={{ color: filters.client_id !== 'all' ? colors.text : colors.textTertiary, fontSize: 13 }}>{filters.client_id !== 'all' ? clients.find(c => String(c.id) === String(filters.client_id))?.name || 'Select Client' : 'All Clients'}</Text>
               </TouchableOpacity>
 
               <Text style={[styles.filterSectionTitle, { color: colors.textSecondary, marginTop: 16, marginBottom: 10 }]}>Payment Method</Text>
@@ -1335,8 +1414,8 @@ export default function Payments() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  summaryContainer: { flexDirection: 'row', paddingHorizontal: 10, gap: 6, marginTop: 10, justifyContent: 'space-between' },
-  summaryCard: { flex: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, borderWidth: 1, overflow: 'hidden' },
+  summaryContainer: { flexDirection: 'row', paddingHorizontal: 10, gap: 6, marginTop: 10, justifyContent: 'space-between', flexWrap: 'wrap' },
+  summaryCard: { flexGrow: 1, borderRadius: 16, padding: 12, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, borderWidth: 1, overflow: 'hidden', minWidth: 120 },
   summaryContent: { flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryCount: { fontWeight: '800', fontSize: 16 },
   summaryCountLight: { color: '#fff' },

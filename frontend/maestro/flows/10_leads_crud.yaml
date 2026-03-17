@@ -1,0 +1,23 @@
+appId: com.visyracrm.app
+---
+- launchApp
+- tapOn: "Total Leads"
+- tapOn: "Add Lead"
+- tapOn: "Name *"
+- inputText: "QA_LEAD_AUTOMATION"
+- tapOn: "Phone *"
+- inputText: "9876543210"
+- tapOn: "Email"
+- inputText: "qa.lead.automation@gmail.com"
+- tapOn: "Add Lead"
+- assertVisible: "Success"
+- tapOn: "OK"
+- tapOn: "Search leads..."
+- inputText: "QA_LEAD_AUTOMATION"
+- assertVisible: "QA_LEAD_AUTOMATION"
+# Failure validation: required fields
+- tapOn: "Add Lead"
+- tapOn: "Add Lead"
+- assertVisible: "Warning"
+- tapOn: "OK"
+
